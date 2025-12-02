@@ -1,0 +1,4 @@
+sqlmesh>=0.20.0
+apache-airflow>=2.0.0
+pyyaml>=5.4.0
+
