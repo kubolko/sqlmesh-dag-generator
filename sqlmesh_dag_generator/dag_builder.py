@@ -86,7 +86,11 @@ class AirflowDAGBuilder:
         elif self.config.generation.operator_type == "bash":
             imports.append("from airflow.operators.bash import BashOperator")
         elif self.config.generation.operator_type == "kubernetes":
-            imports.append("from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator")
+            imports.extend([
+                "from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator",
+                "from kubernetes.client import models as k8s",
+                "from kubernetes.client.models import V1EnvVar",
+            ])
 
         imports.extend([
             "",
@@ -114,13 +118,23 @@ class AirflowDAGBuilder:
         tags = repr(self.config.airflow.tags)
         description = f'"{self.config.airflow.description}"' if self.config.airflow.description else f'"SQLMesh DAG: {self.config.airflow.dag_id}"'
 
+        # Handle start_date - use config or default to days_ago(1)
+        if self.config.airflow.start_date:
+            if self.config.airflow.start_date.startswith("days_ago"):
+                start_date_str = self.config.airflow.start_date
+            else:
+                # Parse ISO date
+                start_date_str = f'datetime.fromisoformat("{self.config.airflow.start_date}")'
+        else:
+            start_date_str = "datetime.now() - timedelta(days=1)"  # Default to yesterday
+
         return f"""# DAG Definition
 dag = DAG(
     dag_id="{self.config.airflow.dag_id}",
     default_args={default_args},
     description={description},
     schedule_interval={schedule},
-    start_date=datetime(2024, 1, 1),
+    start_date={start_date_str},
     catchup={self.config.airflow.catchup},
     max_active_runs={self.config.airflow.max_active_runs},
     tags={tags},
@@ -178,8 +192,13 @@ dag = DAG(
             return self._build_python_task(model_info, task_id)
         elif self.config.generation.operator_type == "bash":
             return self._build_bash_task(model_info, task_id)
+        elif self.config.generation.operator_type == "kubernetes":
+            return self._build_kubernetes_task(model_info, task_id)
         else:
-            return self._build_python_task(model_info, task_id)
+            raise ValueError(
+                f"Unsupported operator_type: {self.config.generation.operator_type}. "
+                f"Must be one of: python, bash, kubernetes"
+            )
 
     def _build_python_task(self, model_info: SQLMeshModelInfo, task_id: str) -> str:
         """Build a PythonOperator task"""
@@ -235,6 +254,54 @@ dag = DAG(
             {task_id} = BashOperator(
                 task_id="{task_id}",
                 bash_command="{bash_command}",
+                dag=dag,
+            )
+        ''').strip()
+
+    def _build_kubernetes_task(self, model_info: SQLMeshModelInfo, task_id: str) -> str:
+        """Build a KubernetesPodOperator task"""
+        if not self.config.generation.docker_image:
+            raise ValueError(
+                "docker_image is required in generation config when using kubernetes operator_type. "
+                "Add 'docker_image: your-image:tag' to your configuration."
+            )
+
+        model_name_escaped = model_info.name.replace('"', '\\"')
+        namespace = self.config.generation.namespace
+        image = self.config.generation.docker_image
+
+        # Build environment variables
+        env_vars = self.config.airflow.env_vars.copy()
+        env_vars.update({
+            'SQLMESH_PROJECT_PATH': self.config.sqlmesh.project_path,
+            'SQLMESH_ENVIRONMENT': self.config.sqlmesh.environment,
+        })
+        if self.config.sqlmesh.gateway:
+            env_vars['SQLMESH_GATEWAY'] = self.config.sqlmesh.gateway
+
+        env_block = ",\n        ".join([
+            f'V1EnvVar(name="{k}", value="{v}")'
+            for k, v in env_vars.items()
+        ])
+
+        return dedent(f'''
+            {task_id} = KubernetesPodOperator(
+                task_id="{task_id}",
+                name="{task_id}",
+                namespace="{namespace}",
+                image="{image}",
+                cmds=["sqlmesh"],
+                arguments=[
+                    "run",
+                    "--select-models", "{model_name_escaped}",
+                    "--start", "{{{{ data_interval_start }}}}",
+                    "--end", "{{{{ data_interval_end }}}}",
+                ],
+                env_vars=[
+                    {env_block}
+                ],
+                get_logs=True,
+                is_delete_operator_pod=True,
                 dag=dag,
             )
         ''').strip()
@@ -354,10 +421,20 @@ except Exception as e:
         tags = repr(self.config.airflow.tags + ['dynamic', 'auto-generated'])
         description = f'"{self.config.airflow.description}"' if self.config.airflow.description else f'"Dynamic SQLMesh DAG: {self.config.airflow.dag_id}"'
 
+        # Handle start_date - use config or default to days_ago(1)
+        if self.config.airflow.start_date:
+            if self.config.airflow.start_date.startswith("days_ago"):
+                start_date_str = self.config.airflow.start_date
+            else:
+                # Parse ISO date
+                start_date_str = f'datetime.fromisoformat("{self.config.airflow.start_date}")'
+        else:
+            start_date_str = "datetime.now() - timedelta(days=1)"  # Default to yesterday
+
         return f'''# Create DAG
 with DAG(
     dag_id="{self.config.airflow.dag_id}",
-    start_date=datetime(2024, 1, 1),
+    start_date={start_date_str},
     schedule_interval={schedule},
     catchup={self.config.airflow.catchup},
     max_active_runs={self.config.airflow.max_active_runs},

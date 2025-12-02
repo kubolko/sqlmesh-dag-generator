@@ -21,11 +21,13 @@ class AirflowConfig:
     """Airflow DAG configuration"""
     dag_id: str
     schedule_interval: Optional[str] = None
+    start_date: Optional[str] = None  # ISO format: "2024-01-01" or use "days_ago(1)"
     default_args: Dict[str, Any] = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)
     catchup: bool = False
     max_active_runs: int = 1
     description: Optional[str] = None
+    env_vars: Dict[str, str] = field(default_factory=dict)  # Environment variables for tasks
 
 
 @dataclass
@@ -34,6 +36,8 @@ class GenerationConfig:
     output_dir: str = "./dags"
     mode: str = "dynamic"  # "static" or "dynamic" - dynamic is default (fire & forget!)
     operator_type: str = "python"  # python, bash, or kubernetes
+    docker_image: Optional[str] = None  # Required for kubernetes operator
+    namespace: str = "default"  # Kubernetes namespace for KubernetesPodOperator
     include_tests: bool = False
     parallel_tasks: bool = True
     max_parallel_tasks: Optional[int] = None

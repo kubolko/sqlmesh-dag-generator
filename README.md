@@ -211,6 +211,39 @@ generator = SQLMeshDAGGenerator(
 )
 ```
 
+## ⚠️ Important: Deployment Warnings
+
+### 🔴 Distributed Airflow Requires Shared Volume
+
+If you're using **KubernetesExecutor**, **CeleryExecutor**, or any distributed Airflow setup:
+
+**Your SQLMesh project MUST be accessible to all workers!**
+
+**Solutions:**
+- **Option 1 (Recommended):** Mount project on shared volume (EFS/NFS/Filestore)
+- **Option 2:** Bake project into Docker image (loses fire-and-forget benefit)
+
+**See full guide:** [docs/DEPLOYMENT_WARNINGS.md](docs/DEPLOYMENT_WARNINGS.md)
+
+### 🟡 Operator Type Limitations
+
+- **Dynamic Mode:** Python operator only (current limitation)
+- **Static Mode:** Supports Python, Bash, and Kubernetes operators
+
+For Bash/Kubernetes in dynamic mode, use static generation for now.
+
+### 🟢 Kubernetes Operator Support
+
+To use `operator_type: kubernetes`:
+```yaml
+generation:
+  operator_type: kubernetes
+  docker_image: "your-registry/sqlmesh:v1.0"  # REQUIRED
+  namespace: "data-pipelines"
+```
+
+**📖 Full Documentation:** [docs/DEPLOYMENT_WARNINGS.md](docs/DEPLOYMENT_WARNINGS.md)
+
 ## Requirements
 
 - Python >= 3.8

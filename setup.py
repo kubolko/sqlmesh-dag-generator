@@ -20,13 +20,13 @@ if requirements_file.exists():
 
 setup(
     name="sqlmesh-dag-generator",
-    version="0.1.0",
+    version="0.2.0",
     description="Open-source Airflow DAG generator for SQLMesh projects",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="Your Name",
-    author_email="your.email@example.com",
-    url="https://github.com/yourusername/sqlmesh-dag-generator",
+    author="Jakub Sumionka",
+    author_email="jakub.sumionka@gmail.com",
+    url="https://github.com/kubolko/sqlmesh-dag-generator",
     packages=find_packages(exclude=["tests", "tests.*", "examples", "docs"]),
     install_requires=requirements,
     extras_require={
@@ -58,9 +58,9 @@ setup(
     python_requires=">=3.8",
     keywords="sqlmesh airflow dag generator etl data-engineering",
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/sqlmesh-dag-generator/issues",
-        "Source": "https://github.com/yourusername/sqlmesh-dag-generator",
-        "Documentation": "https://github.com/yourusername/sqlmesh-dag-generator/docs",
+        "Bug Reports": "https://github.com/kubolko/sqlmesh-dag-generator/issues",
+        "Source": "https://github.com/kubolko/sqlmesh-dag-generator",
+        "Documentation": "https://github.com/kubolko/sqlmesh-dag-generator/docs",
     },
 )
 
