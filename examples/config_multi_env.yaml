@@ -1,0 +1,206 @@
+# SQLMesh Configuration for Multi-Environment DWH
+#
+# This configuration demonstrates best practices for multi-environment setup:
+# - docker_local: For local development with DuckDB
+# - dev: Development environment with Redshift
+# - staging: Staging environment with Redshift
+# - prod: Production environment with Redshift
+#
+# Usage with sqlmesh-dag-generator:
+#   - Set Airflow Variable 'sqlmesh_gateway' to switch environments
+#   - Credentials via environment variables (never hardcoded!)
+#   - Shared state in PostgreSQL for production environments
+
+# ==============================================================================
+# Global Settings
+# ==============================================================================
+
+# Default gateway for local development
+default_gateway: docker_local
+
+# Model defaults
+model_defaults:
+  dialect: redshift
+  start: 2023-01-01
+
+# Project settings
+project: my_dwh
+
+# ==============================================================================
+# Shared State Backend (PostgreSQL)
+# ==============================================================================
+# Used by dev/staging/prod for shared state tracking
+# docker_local overrides this with local DuckDB
+
+state_connection:
+  type: postgres
+  host: "{{ env_var('POSTGRES_HOST') }}"
+  port: 5432
+  user: "{{ env_var('POSTGRES_USER') }}"
+  password: "{{ env_var('POSTGRES_PASSWORD') }}"
+  database: sqlmesh
+
+# ==============================================================================
+# Gateways (Environments)
+# ==============================================================================
+
+gateways:
+  # --------------------------------------------------------------------------
+  # Docker Local Development
+  # --------------------------------------------------------------------------
+  # Use this for local development in Docker
+  # - In-memory DuckDB for fast testing
+  # - Local file-based state (not shared)
+  # - No credentials needed
+
+  docker_local:
+    connection:
+      type: duckdb
+      database: ":memory:"
+
+    # Override global state_connection for local development
+    state_connection:
+      type: duckdb
+      database: .sqlmesh/state.db
+
+  # --------------------------------------------------------------------------
+  # Local Development (Non-Docker)
+  # --------------------------------------------------------------------------
+  # Same as docker_local but can be used outside Docker
+
+  local:
+    connection:
+      type: duckdb
+      database: ":memory:"
+
+    state_connection:
+      type: duckdb
+      database: .sqlmesh/state.db
+
+  # --------------------------------------------------------------------------
+  # Development Environment
+  # --------------------------------------------------------------------------
+  # Remote Redshift database for development
+  # Uses shared PostgreSQL state (from global state_connection)
+
+  dev:
+    connection:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_DEV_HOST') }}"
+      port: 5439
+      user: "{{ env_var('REDSHIFT_USER') }}"
+      password: "{{ env_var('REDSHIFT_PASSWORD') }}"
+      database: dev
+      sslmode: require
+
+    # Uses global state_connection (PostgreSQL)
+
+  # --------------------------------------------------------------------------
+  # Staging Environment
+  # --------------------------------------------------------------------------
+  # Pre-production testing environment
+  # Uses shared PostgreSQL state (from global state_connection)
+
+  staging:
+    connection:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_STAGING_HOST') }}"
+      port: 5439
+      user: "{{ env_var('REDSHIFT_USER') }}"
+      password: "{{ env_var('REDSHIFT_PASSWORD') }}"
+      database: staging
+      sslmode: require
+
+    # Uses global state_connection (PostgreSQL)
+
+  # --------------------------------------------------------------------------
+  # Production Environment
+  # --------------------------------------------------------------------------
+  # Production data warehouse
+  # Uses shared PostgreSQL state (from global state_connection)
+
+  prod:
+    connection:
+      type: redshift
+      host: "{{ env_var('REDSHIFT_PROD_HOST') }}"
+      port: 5439
+      user: "{{ env_var('REDSHIFT_USER') }}"
+      password: "{{ env_var('REDSHIFT_PASSWORD') }}"
+      database: prod
+      sslmode: require
+
+    # Uses global state_connection (PostgreSQL)
+
+  # --------------------------------------------------------------------------
+  # Test Environment (CI/CD)
+  # --------------------------------------------------------------------------
+  # For automated testing in CI/CD pipelines
+  # Uses isolated DuckDB state
+
+  test:
+    connection:
+      type: duckdb
+      database: test.db
+
+    state_connection:
+      type: duckdb
+      database: .sqlmesh/test_state.db
+
+# ==============================================================================
+# Environment Variables Reference
+# ==============================================================================
+# Set these in your environment (docker-compose.yml, Kubernetes secrets, etc.):
+#
+# # PostgreSQL State Connection
+# POSTGRES_HOST=your-postgres-host.rds.amazonaws.com
+# POSTGRES_USER=sqlmesh
+# POSTGRES_PASSWORD=your-secure-password
+#
+# # Redshift Connections
+# REDSHIFT_DEV_HOST=dev-cluster.redshift.amazonaws.com
+# REDSHIFT_STAGING_HOST=staging-cluster.redshift.amazonaws.com
+# REDSHIFT_PROD_HOST=prod-cluster.redshift.amazonaws.com
+# REDSHIFT_USER=your-redshift-user
+# REDSHIFT_PASSWORD=your-secure-redshift-password
+#
+# ==============================================================================
+
+# ==============================================================================
+# Usage Examples
+# ==============================================================================
+#
+# # Local development
+# sqlmesh --gateway docker_local plan
+# sqlmesh --gateway docker_local run
+#
+# # Development environment
+# sqlmesh --gateway dev plan
+# sqlmesh --gateway dev run
+#
+# # Staging environment
+# sqlmesh --gateway staging plan
+# sqlmesh --gateway staging run
+#
+# # Production environment
+# sqlmesh --gateway prod plan
+# sqlmesh --gateway prod run
+#
+# # With sqlmesh-dag-generator in Airflow:
+# # Set Airflow Variable: sqlmesh_gateway = "prod"
+# # The DAG will automatically use the prod gateway
+#
+# ==============================================================================
+
+# ==============================================================================
+# Best Practices
+# ==============================================================================
+#
+# 1. Never hardcode credentials - always use environment variables
+# 2. Use shared state (PostgreSQL) for persistent environments (dev/staging/prod)
+# 3. Use local state (DuckDB) for development and testing
+# 4. Keep gateway names aligned between config.yaml and Airflow Variables
+# 5. Document your environment variables in README or .env.example
+# 6. Test configuration with: sqlmesh --gateway <name> info
+#
+# ==============================================================================
+
