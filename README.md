@@ -8,11 +8,31 @@ Transform your SQLMesh models into production-ready Airflow DAGs with **full dat
 
 - 🔥 **Dynamic DAG Generation (Default)**: Fire-and-forget - place DAG once, auto-discovers models at runtime
 - ✅ **Full Lineage in Airflow**: Each SQLMesh model = One Airflow task with proper dependencies
-- 🌍 **Multi-Environment Support**: Use Airflow Variables for dev/staging/prod
+- 🌍 **Multi-Environment Support**: Use Airflow Variables + SQLMesh gateways for dev/staging/prod
 - ⚡ **Incremental Models**: Proper handling with `data_interval_start/end`
 - 🎯 **Enhanced Error Handling**: SQLMesh-specific error messages in Airflow logs
 - 🛠️ **Dual Mode**: Dynamic (auto-discovery, default) or Static (full control)
 - 🚫 **No Vendor Lock-in**: Open source, no cloud dependencies
+
+## ⚠️ Important: Gateway vs Environment
+
+**SQLMesh uses "gateways" to switch between environments, NOT an "environment" parameter.**
+
+```python
+# ❌ WRONG - environment parameter is deprecated
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/path/to/project",
+    environment="prod",  # This doesn't work!
+)
+
+# ✅ CORRECT - Use gateway to switch environments
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/path/to/project",
+    gateway="prod"  # This is how you select your environment!
+)
+```
+
+**See [Multi-Environment Configuration Guide](docs/MULTI_ENVIRONMENT.md) for complete setup instructions.**
 
 ## 🚀 Quick Start (3 Steps)
 
@@ -73,8 +93,13 @@ Airflow Graph View:
 ## 📚 Documentation
 
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Step-by-step tutorial (start here!)
+- **[Quick Reference](docs/QUICK_REFERENCE.md)** - One-page cheat sheet
+- **[Multi-Environment Setup](docs/MULTI_ENVIRONMENT.md)** - Configure for dev/staging/prod ⚠️ IMPORTANT
+- **[Migration Guide](docs/MIGRATION_GUIDE.md)** - Fix common configuration issues
+- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
 - **[Usage Guide](docs/USAGE.md)** - Complete reference
 - **[Dynamic DAGs](docs/DYNAMIC_DAGS.md)** - Fire-and-forget mode explained
+- **[Deployment Warnings](docs/DEPLOYMENT_WARNINGS.md)** - Critical production considerations
 - **[Examples](examples/)** - Code examples
 - **[Architecture](docs/ARCHITECTURE.md)** - Technical details
 

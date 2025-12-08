@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-12-08
+
+### Added
+- **Multi-Environment Configuration Guide** (`docs/MULTI_ENVIRONMENT.md`)
+  - Complete guide for dev/staging/prod setup
+  - Gateway vs environment parameter clarification
+  - Environment variable management
+  - State connection strategies
+  - Airflow Variables integration
+- **Comprehensive Troubleshooting Guide** (`docs/TROUBLESHOOTING.md`)
+  - Common issues and solutions
+  - Debugging tips and techniques
+  - Pre-deployment checklist
+  - Quick diagnostics procedures
+- **Configuration Validator** (`validate_config.py`)
+  - Automated validation of SQLMesh + Airflow configuration
+  - Gateway existence checks
+  - Model discovery verification
+  - Environment variable detection
+  - Worker access verification guidance
+- **Multi-Environment Example** (`examples/4_multi_environment.py`)
+  - Production-ready DAG example
+  - Proper Airflow Variables usage
+  - Gateway-based environment switching
+  - Comprehensive inline documentation
+- **Example SQLMesh Config** (`examples/config_multi_env.yaml`)
+  - Multi-environment gateway setup
+  - docker_local, dev, staging, prod gateways
+  - Environment variable templating
+  - State connection best practices
+- **Configuration Fixes Summary** (`docs/CONFIGURATION_FIXES.md`)
+  - Documents all resolved compatibility issues
+  - Migration guide for existing users
+
+### Fixed
+- **Critical: Gateway vs Environment Confusion**
+  - Added deprecation warning for `environment` parameter in SQLMeshConfig
+  - Updated all documentation to emphasize `gateway` usage
+  - All examples now use `gateway` instead of `environment`
+- **Missing docker_local Gateway Documentation**
+  - Added docker_local gateway to example configs
+  - Documented gateway naming conventions
+  - Updated defaults to use docker_local
+- **Undocumented Shared Volume Requirement**
+  - Enhanced Deployment Warnings with detailed shared volume section
+  - Documented three solutions: shared volume, Docker image, git-sync
+  - Added worker access verification steps
+- **Hardcoded Credentials in Examples**
+  - All examples now use environment variable templating
+  - Added security best practices guide
+  - Validator warns about hardcoded credentials
+- **State Connection Conflicts**
+  - Documented shared vs isolated state strategies
+  - Provided examples for both approaches
+  - Added validation for state configuration
+
+### Changed
+- **Enhanced README**
+  - Prominent warning about gateway vs environment
+  - Link to Multi-Environment Configuration Guide
+  - Updated feature list for multi-environment support
+- **Updated docs/README.md**
+  - Added Configuration section with new guides
+  - Added important notes about gateway and distributed Airflow
+  - Better navigation for production deployments
+- **Updated simple_generate.py Example**
+  - Now uses Airflow Variables
+  - Demonstrates gateway usage
+  - More production-ready pattern
+- **Enhanced SQLMeshConfig**
+  - Added detailed docstring with examples
+  - Added `__post_init__` validation
+  - Deprecation warning for environment parameter
+
+### Documentation
+- **NEW**: Multi-Environment Configuration (comprehensive guide)
+- **NEW**: Troubleshooting Guide (common issues)
+- **NEW**: Configuration Validator (automated checks)
+- **ENHANCED**: Deployment Warnings (shared volume, credentials, etc.)
+- **ENHANCED**: README (gateway warning, better navigation)
+- **ENHANCED**: Examples (production-ready patterns)
+
 ## [0.2.0] - 2025-12-02
 
 ### Added

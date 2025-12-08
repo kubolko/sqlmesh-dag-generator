@@ -9,11 +9,42 @@ import yaml
 
 @dataclass
 class SQLMeshConfig:
-    """SQLMesh project configuration"""
+    """
+    SQLMesh project configuration
+
+    Important: Use 'gateway' to switch between environments (dev/staging/prod),
+    NOT the 'environment' parameter which is deprecated.
+
+    Example:
+        # ✅ CORRECT - Use gateway
+        config = SQLMeshConfig(
+            project_path="/path/to/project",
+            gateway="prod"  # This selects your environment
+        )
+
+        # ❌ DEPRECATED - Don't use environment
+        config = SQLMeshConfig(
+            project_path="/path/to/project",
+            environment="prod"  # This is ignored by SQLMesh
+        )
+    """
     project_path: str
-    environment: str = "prod"
+    environment: str = "prod"  # DEPRECATED: Use 'gateway' instead
     gateway: Optional[str] = None
     config_path: Optional[str] = None
+
+    def __post_init__(self):
+        """Validate configuration and show deprecation warnings"""
+        import warnings
+
+        if self.environment != "prod" and not self.gateway:
+            warnings.warn(
+                "The 'environment' parameter is deprecated and ignored by SQLMesh. "
+                "Use 'gateway' instead to switch between environments. "
+                "See docs/MULTI_ENVIRONMENT.md for details.",
+                DeprecationWarning,
+                stacklevel=2
+            )
 
 
 @dataclass
