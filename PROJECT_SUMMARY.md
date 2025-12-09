@@ -17,17 +17,26 @@ SQLMeshDAGGenerator/
 │   ├── cli.py                      # Command-line interface
 │   └── utils.py                    # Utility functions
 ├── tests/                          # Test suite
-│   ├── test_generator.py           # Main generator tests (17 tests)
+│   ├── test_generator.py           # Main generator tests
 │   ├── test_config.py              # Configuration tests
 │   ├── test_models.py              # Data model tests
-│   └── test_utils.py               # Utility tests
+│   ├── test_utils.py               # Utility tests
+│   ├── test_auto_schedule.py       # Auto-scheduling tests (16 tests) 📅 NEW
+│   ├── test_airflow_utils.py       # Credential resolver tests
+│   └── test_kubernetes.py          # Kubernetes operator tests
 ├── examples/                       # Usage examples
-│   ├── simple_generate.py          # Minimal example (⭐ start here)
+│   ├── simple_generate.py          # Minimal example with auto-schedule ⭐
+│   ├── 5_custom_schedule.py        # Custom schedule override examples 📅 NEW
 │   ├── 1_dynamic_dag_example.py    # Production-ready example
 │   ├── 2_generate_dag_file.py      # File generation approach
-│   └── 3_using_config_file.py      # Configuration-based
+│   ├── 3_using_config_file.py      # Configuration-based
+│   ├── 4_multi_environment.py      # Multi-environment setup
+│   └── 7_recommended_approach.py   # Best practices
 ├── docs/                           # Documentation
 │   ├── QUICKSTART.md               # Getting started guide
+│   ├── AUTO_SCHEDULING.md          # Auto-scheduling guide 📅 NEW
+│   ├── RUNTIME_CONFIGURATION.md    # Credential parametrization 🔐 NEW
+│   ├── MULTI_ENVIRONMENT.md        # Gateway configuration ⚠️ IMPORTANT
 │   ├── USAGE.md                    # Complete usage reference
 │   ├── DYNAMIC_DAGS.md             # Dynamic mode deep-dive
 │   └── ARCHITECTURE.md             # Technical details
@@ -45,9 +54,11 @@ SQLMeshDAGGenerator/
 
 The main class that orchestrates DAG generation:
 
-- **create_tasks_in_dag(dag)**: 🔥 NEW - Creates tasks directly in a DAG (recommended)
+- **create_tasks_in_dag(dag)**: 🔥 Creates tasks directly in a DAG (recommended)
 - **generate_dynamic_dag()**: Generates dynamic DAG code (fire-and-forget)
 - **generate_dag()**: Generates static DAG code (alternative approach)
+- **get_recommended_schedule()**: 📅 NEW - Auto-detects optimal schedule from models
+- **get_model_intervals_summary()**: 📅 NEW - Groups models by interval_unit
 - **load_sqlmesh_context()**: Loads SQLMesh project using Context API
 - **extract_models()**: Extracts model information and dependencies
 - **build_dag_structure()**: Builds task dependency graph

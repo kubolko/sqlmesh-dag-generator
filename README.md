@@ -7,6 +7,8 @@ Transform your SQLMesh models into production-ready Airflow DAGs with **full dat
 ## ✨ Key Features
 
 - 🔥 **Dynamic DAG Generation (Default)**: Fire-and-forget - place DAG once, auto-discovers models at runtime
+- 📅 **Auto-Scheduling**: Automatically detects DAG schedule from SQLMesh model intervals - no manual configuration!
+- 🔐 **Runtime Connection Parametrization**: Pass database credentials via Airflow Connections - no hardcoded secrets!
 - ✅ **Full Lineage in Airflow**: Each SQLMesh model = One Airflow task with proper dependencies
 - 🌍 **Multi-Environment Support**: Use Airflow Variables + SQLMesh gateways for dev/staging/prod
 - ⚡ **Incremental Models**: Proper handling with `data_interval_start/end`
@@ -94,6 +96,8 @@ Airflow Graph View:
 
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Step-by-step tutorial (start here!)
 - **[Quick Reference](docs/QUICK_REFERENCE.md)** - One-page cheat sheet
+- **[Auto-Scheduling Guide](docs/AUTO_SCHEDULING.md)** - Automatic schedule detection 📅 NEW!
+- **[Runtime Configuration](docs/RUNTIME_CONFIGURATION.md)** - Pass credentials via Airflow Connections 🔐
 - **[Multi-Environment Setup](docs/MULTI_ENVIRONMENT.md)** - Configure for dev/staging/prod ⚠️ IMPORTANT
 - **[Migration Guide](docs/MIGRATION_GUIDE.md)** - Fix common configuration issues
 - **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions

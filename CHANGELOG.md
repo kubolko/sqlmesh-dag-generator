@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-12-09
+
+### Enhanced
+- **Enhanced Auto-Scheduling Interval Support** 📅
+  - Expanded interval mapping from 10 to 13 supported intervals
+  - Added defensive alias support: `THIRTY_MINUTE`, `FIFTEEN_MINUTE`
+  - Added `TEN_MINUTE` interval support (`*/10 * * * *`)
+  - Comprehensive documentation of SQLMesh interval capabilities
+  - Safe fallback to `@daily` for unknown future intervals
+  - See [Interval Mapping Analysis](docs/INTERVAL_MAPPING_ANALYSIS.md) for details
+
+### Documentation
+- **NEW**: `docs/INTERVAL_MAPPING_ANALYSIS.md` - Complete interval support analysis
+- **NEW**: `docs/AUTO_SCHEDULING_IMPLEMENTATION.md` - Implementation details
+- **NEW**: `docs/QUICK_REFERENCE.md` - One-page cheat sheet
+- **UPDATED**: `docs/AUTO_SCHEDULING.md` - Updated supported intervals table
+- **UPDATED**: All documentation references to reflect v0.4.0
+
+### Testing
+- All 83 tests passing
+- Enhanced interval conversion tests
+- Verified dynamic DAG generation with expanded intervals
+
+## [0.3.0] - 2025-12-09
+
+### Added
+- **Auto-Scheduling** 📅
+  - NEW: `auto_schedule` parameter (enabled by default)
+  - NEW: `get_recommended_schedule()` - Analyzes SQLMesh models and returns optimal Airflow schedule
+  - NEW: `get_model_intervals_summary()` - See which models run at which intervals
+  - Automatic detection of minimum interval across all SQLMesh models
+  - Support for all SQLMesh interval units (MINUTE, FIVE_MINUTE, HOUR, DAY, etc.)
+  - Intelligent conversion from SQLMesh intervals to Airflow cron expressions
+  - Works in both static and dynamic DAG generation modes
+  - See [Auto-Scheduling Guide](docs/AUTO_SCHEDULING.md) for details
+
+- **Plugin-Based Credential Resolver Architecture** 🔐
+  - NEW: `resolve_credentials()` - Universal credential resolution function
+  - NEW: `CredentialResolver` - Base class for custom credential resolvers
+  - NEW: `register_credential_resolver()` - Register custom resolvers
+  - Built-in resolvers:
+    - `AirflowConnectionResolver` - Direct Connection object or ID support
+    - `AWSSecretsManagerResolver` - AWS Secrets Manager integration
+    - `EnvironmentVariableResolver` - Environment variable support
+    - `CallableResolver` - Custom function support
+  - Auto-detection of credential source type
+  - Extensible plugin architecture for any credential source
+  
+### Changed
+- **BREAKING**: Simplified API (clean slate - no users yet)
+  - `SQLMeshDAGGenerator` now accepts `connection` parameter directly
+  - Pass Airflow Connection objects, IDs, or dicts directly - no conversion needed!
+  - Support for separate `state_connection` parameter
+  - Runtime config merging with existing config.yaml files
+  - Removed deprecated conversion functions for cleaner codebase
+  
+### Documentation
+- **NEW**: `docs/ARCHITECTURE_DECISION.md` - Design rationale for plugin architecture
+- **NEW**: `examples/7_recommended_approach.py` - Clean API examples (6 patterns)
+- **UPDATED**: README with new credential resolver approach
+- **UPDATED**: Test configuration with warning filters for clean output
+
+### Removed
+- Deprecated functions removed (clean slate):
+  - `airflow_connection_to_sqlmesh_config()` - Use `resolve_credentials()` instead
+  - `get_connection_from_variable()` - Use `resolve_credentials()` instead
+  - `build_runtime_config()` - Pass `connection` directly to generator instead
+
 ## [0.2.1] - 2025-12-08
 
 ### Added
@@ -89,88 +157,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ENHANCED**: README (gateway warning, better navigation)
 - **ENHANCED**: Examples (production-ready patterns)
 
-## [0.2.0] - 2025-12-02
-
-### Added
-- **Kubernetes Operator Support**: Full implementation of KubernetesPodOperator
-  - New `docker_image` config field (required for kubernetes)
-  - New `namespace` config field (defaults to "default")
-  - Proper error handling with helpful messages
-  - Example Dockerfile and K8s configuration in docs
-- **Configurable Start Date**: 
-  - New `start_date` field in AirflowConfig
-  - Supports ISO format ("2024-01-01") or days_ago syntax
-  - Defaults to yesterday instead of hardcoded 2024-01-01
-- **Environment Variables Support**:
-  - New `env_vars` field in AirflowConfig
-  - Supports Airflow Variable templating
-  - Per-DAG environment variable injection
-- **Comprehensive Deployment Guide**: New `docs/DEPLOYMENT_WARNINGS.md`
-  - Shared volume requirements for distributed Airflow
-  - Kubernetes-specific setup guide
-  - Database credential injection patterns
-  - Pre-flight checklist and troubleshooting
-
-### Fixed
-- **Critical: Kubernetes Operator Fallthrough Bug**
-  - Previously, selecting `operator_type: kubernetes` silently fell back to PythonOperator
-  - Now properly validates and generates KubernetesPodOperator
-  - Raises clear error if `docker_image` not provided
-- **Hardcoded Start Date**: 
-  - Removed hardcoded `datetime(2024, 1, 1)` from both static and dynamic DAGs
-  - Now configurable via config or defaults to yesterday
-- **Operator Type Validation**:
-  - Now raises `ValueError` for unsupported operator types
-  - Clear error messages guide users to fix configuration
-
-### Changed
-- **Improved Kubernetes Imports**: Added proper V1EnvVar and k8s models imports
-- **Better Error Messages**: More specific validation errors with actionable guidance
-
-### Documented
-- **Operator Type Limitations**: Dynamic mode currently supports Python only
-  - Documented workaround: use static mode for bash/kubernetes
-  - Roadmap item for v0.3.0: full operator support in dynamic mode
-- **Distributed Airflow Requirements**: Clear warning about shared volume needs
-- **Database Credential Patterns**: Best practices for credential injection
-
-## [0.1.0] - 2025-01-XX
-
-### Added
-- Initial release
-- Dynamic DAG generation (fire-and-forget deployment)
-- Static DAG generation (full control)
-- SQLMesh model discovery and dependency resolution
-- Proper incremental model handling (data_interval_start/end)
-- Multi-environment support via Airflow Variables
-- Comprehensive test suite (36 tests)
-- CLI tool (`sqlmesh-dag-gen`)
-- Examples and documentation
-- Python 3.9-3.12 support
-
-### Features
-- Automatic task creation from SQLMesh models
-- Dependency graph from SQLMesh lineage
-- PythonOperator and BashOperator support
-- Error handling with SQLMesh-specific exceptions
-- Configuration via Python API or YAML files
-- `create_tasks_in_dag()` method for inline DAG creation
-
----
-
-## Release Notes
-
-### v0.2.0 Highlights
-
-This release fixes critical bugs and adds production-ready features:
-
-1. **Kubernetes Support Actually Works Now** 🎉
-   - Previously broken, now fully implemented
-   - Clear error messages if misconfigured
-
-2. **No More Hardcoded Dates** ✅
-   - Configurable start_date
-   - Defaults to yesterday (best practice)
 
 3. **Environment Variable Injection** 🔐
    - Secure credential handling

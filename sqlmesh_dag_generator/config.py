@@ -15,6 +15,20 @@ class SQLMeshConfig:
     Important: Use 'gateway' to switch between environments (dev/staging/prod),
     NOT the 'environment' parameter which is deprecated.
 
+    Runtime Connection Configuration:
+        You can pass connection parameters at runtime to avoid hardcoding credentials:
+
+        config = SQLMeshConfig(
+            project_path="/path/to/project",
+            gateway="prod",
+            connection_config={
+                "type": "postgres",
+                "host": "{{ conn.postgres_default.host }}",
+                "user": "{{ conn.postgres_default.login }}",
+                ...
+            }
+        )
+
     Example:
         # ✅ CORRECT - Use gateway
         config = SQLMeshConfig(
@@ -32,6 +46,9 @@ class SQLMeshConfig:
     environment: str = "prod"  # DEPRECATED: Use 'gateway' instead
     gateway: Optional[str] = None
     config_path: Optional[str] = None
+    connection_config: Optional[Dict[str, Any]] = None  # Runtime connection parameters
+    state_connection_config: Optional[Dict[str, Any]] = None  # Runtime state connection parameters
+    config_overrides: Dict[str, Any] = field(default_factory=dict)  # Any other SQLMesh config overrides
 
     def __post_init__(self):
         """Validate configuration and show deprecation warnings"""
@@ -52,6 +69,7 @@ class AirflowConfig:
     """Airflow DAG configuration"""
     dag_id: str
     schedule_interval: Optional[str] = None
+    auto_schedule: bool = True  # Automatically detect schedule from SQLMesh models
     start_date: Optional[str] = None  # ISO format: "2024-01-01" or use "days_ago(1)"
     default_args: Dict[str, Any] = field(default_factory=dict)
     tags: List[str] = field(default_factory=list)

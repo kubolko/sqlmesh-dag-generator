@@ -3,7 +3,7 @@ Core DAG generator module
 """
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union, Any, List
 
 from sqlmesh import Context
 from sqlmesh.core.model import Model
@@ -31,7 +31,10 @@ class SQLMeshDAGGenerator:
         sqlmesh_project_path: Optional[str] = None,
         dag_id: Optional[str] = None,
         schedule_interval: Optional[str] = None,
+        auto_schedule: bool = True,
         config: Optional[DAGGeneratorConfig] = None,
+        connection: Optional[Union[str, Dict, Any]] = None,
+        state_connection: Optional[Union[str, Dict, Any]] = None,
         **kwargs
     ):
         """
@@ -40,10 +43,89 @@ class SQLMeshDAGGenerator:
         Args:
             sqlmesh_project_path: Path to SQLMesh project
             dag_id: Airflow DAG ID
-            schedule_interval: Airflow schedule interval
+            schedule_interval: Airflow schedule interval (overrides auto_schedule if set)
+            auto_schedule: Automatically detect schedule from SQLMesh models (default: True)
             config: Full DAGGeneratorConfig object
+            connection: Database connection - can be:
+                - Airflow Connection object (RECOMMENDED)
+                - Airflow connection ID (string)
+                - Dict with connection parameters
+                - AWS Secrets Manager secret name (with resolver_type)
+            state_connection: State database connection (same types as connection)
             **kwargs: Additional configuration options
+                - gateway: SQLMesh gateway name
+                - environment: (deprecated) use gateway instead
+                - credential_resolver: Override credential resolver type
+                - default_args: Airflow DAG default_args
+                - tags: Airflow DAG tags
+                - catchup: Airflow catchup setting
+                - max_active_runs: Airflow max_active_runs
+                - output_dir: Directory for generated DAG files
+                - operator_type: Type of operator (python, bash, kubernetes)
+                - include_tests: Include test models
+                - parallel_tasks: Enable parallel task execution
+                - include_models: List of models to include
+                - exclude_models: List of models to exclude
+
+        Examples:
+            # RECOMMENDED: Auto-schedule based on SQLMesh models
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                connection="postgres_prod",
+                auto_schedule=True,  # Default - detects minimum interval
+            )
+
+            # Or override with manual schedule
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                schedule_interval="@hourly",  # Disables auto_schedule
+                connection="postgres_prod",
+            )
+
+            # Or just pass connection ID (will be resolved automatically)
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                connection="postgres_prod",  # Simpler!
+            )
+
+            # Or pass a dict directly
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                connection={
+                    "type": "postgres",
+                    "host": "localhost",
+                    "user": "user",
+                    "password": "pass",
+                },
+            )
+
+            # Separate state connection
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                connection="snowflake_prod",
+                state_connection="postgres_state",
+            )
+
+            # AWS Secrets Manager
+            generator = SQLMeshDAGGenerator(
+                sqlmesh_project_path="/path/to/project",
+                connection="prod/database/creds",
+                credential_resolver="aws_secrets",
+            )
         """
+        # Resolve credentials if provided
+        resolved_connection = None
+        resolved_state_connection = None
+        credential_resolver = kwargs.get('credential_resolver')
+
+        if connection is not None:
+            from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+            resolved_connection = resolve_credentials(connection, resolver_type=credential_resolver)
+
+        if state_connection is not None:
+            from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+            resolved_state_connection = resolve_credentials(state_connection, resolver_type=credential_resolver)
+
         if config:
             self.config = config
         else:
@@ -52,11 +134,15 @@ class SQLMeshDAGGenerator:
                 project_path=sqlmesh_project_path or "./",
                 environment=kwargs.get("environment", "prod"),
                 gateway=kwargs.get("gateway"),
+                connection_config=resolved_connection,
+                state_connection_config=resolved_state_connection,
+                config_overrides=kwargs.get("config_overrides", {}),
             )
 
             airflow_config = AirflowConfig(
                 dag_id=dag_id or "sqlmesh_dag",
                 schedule_interval=schedule_interval,
+                auto_schedule=auto_schedule if schedule_interval is None else False,
                 default_args=kwargs.get("default_args", {}),
                 tags=kwargs.get("tags", ["sqlmesh"]),
                 catchup=kwargs.get("catchup", False),
@@ -86,22 +172,82 @@ class SQLMeshDAGGenerator:
         """
         Load the SQLMesh context from the project path.
 
+        If runtime connection configuration is provided, it will be merged into
+        the SQLMesh config to avoid hardcoded credentials.
+
         Returns:
             SQLMesh Context object
         """
         logger.info(f"Loading SQLMesh context from: {self.config.sqlmesh.project_path}")
 
         try:
-            self.context = Context(
-                paths=self.config.sqlmesh.project_path,
-                gateway=self.config.sqlmesh.gateway,
-                config=self.config.sqlmesh.config_path,
-            )
+            # Build context kwargs
+            context_kwargs = {
+                "paths": self.config.sqlmesh.project_path,
+                "gateway": self.config.sqlmesh.gateway,
+            }
+
+            # Add config path if provided
+            if self.config.sqlmesh.config_path:
+                context_kwargs["config"] = self.config.sqlmesh.config_path
+
+            # If runtime connection config is provided, we need to merge it with the config
+            if self.config.sqlmesh.connection_config or self.config.sqlmesh.state_connection_config or self.config.sqlmesh.config_overrides:
+                from sqlmesh.core.config import Config
+
+                # Load base config from file or use defaults
+                if self.config.sqlmesh.config_path:
+                    base_config = Config.load(self.config.sqlmesh.config_path)
+                else:
+                    # Try to load from project path
+                    try:
+                        base_config = Config.load(Path(self.config.sqlmesh.project_path) / "config.yaml")
+                    except:
+                        base_config = Config()
+
+                # Apply runtime connection config
+                config_dict = base_config.dict()
+
+                # Merge connection config for the gateway
+                if self.config.sqlmesh.connection_config:
+                    gateway_name = self.config.sqlmesh.gateway or config_dict.get("default_gateway", "default")
+                    if "gateways" not in config_dict:
+                        config_dict["gateways"] = {}
+                    if gateway_name not in config_dict["gateways"]:
+                        config_dict["gateways"][gateway_name] = {}
+                    config_dict["gateways"][gateway_name]["connection"] = self.config.sqlmesh.connection_config
+
+                # Merge state connection config
+                if self.config.sqlmesh.state_connection_config:
+                    gateway_name = self.config.sqlmesh.gateway or config_dict.get("default_gateway", "default")
+                    if "gateways" not in config_dict:
+                        config_dict["gateways"] = {}
+                    if gateway_name not in config_dict["gateways"]:
+                        config_dict["gateways"][gateway_name] = {}
+                    config_dict["gateways"][gateway_name]["state_connection"] = self.config.sqlmesh.state_connection_config
+
+                # Apply any other config overrides
+                if self.config.sqlmesh.config_overrides:
+                    self._deep_merge(config_dict, self.config.sqlmesh.config_overrides)
+
+                # Create new config from merged dict
+                merged_config = Config.parse_obj(config_dict)
+                context_kwargs["config"] = merged_config
+
+            self.context = Context(**context_kwargs)
             logger.info(f"Successfully loaded SQLMesh context")
             return self.context
         except Exception as e:
             logger.error(f"Failed to load SQLMesh context: {e}")
             raise
+
+    def _deep_merge(self, base_dict: Dict, override_dict: Dict) -> None:
+        """Deep merge override_dict into base_dict"""
+        for key, value in override_dict.items():
+            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+                self._deep_merge(base_dict[key], value)
+            else:
+                base_dict[key] = value
 
     def extract_models(self) -> Dict[str, SQLMeshModelInfo]:
         """
@@ -196,6 +342,76 @@ class SQLMeshDAGGenerator:
             description=description,
             model=model,
         )
+
+    def get_recommended_schedule(self) -> str:
+        """
+        Get the recommended schedule based on SQLMesh model intervals.
+
+        This analyzes all models in the SQLMesh project and returns the
+        shortest (most frequent) interval as an Airflow cron expression.
+
+        Returns:
+            Cron expression for the recommended schedule (e.g., "*/5 * * * *")
+
+        Example:
+            generator = SQLMeshDAGGenerator(...)
+            recommended = generator.get_recommended_schedule()
+            # Use in DAG: schedule=recommended
+        """
+        # If schedule is manually set, return it
+        if self.config.airflow.schedule_interval:
+            return self.config.airflow.schedule_interval
+
+        # If auto_schedule is disabled, return default
+        if not self.config.airflow.auto_schedule:
+            return "@daily"
+
+        # Load models if not already loaded
+        if not self.models:
+            if not self.context:
+                self.load_sqlmesh_context()
+            self.extract_models()
+
+        # Collect all interval_units from models
+        interval_units = [model.interval_unit for model in self.models.values()]
+
+        # Get minimum interval and convert to cron
+        from sqlmesh_dag_generator.utils import get_minimum_interval
+        min_interval, cron = get_minimum_interval(interval_units)
+
+        if min_interval:
+            logger.info(f"Auto-detected schedule: {cron} (based on interval: {min_interval})")
+        else:
+            logger.info(f"No intervals found in models, using default: {cron}")
+
+        return cron
+
+    def get_model_intervals_summary(self) -> Dict[str, List[str]]:
+        """
+        Get a summary of models grouped by their interval_unit.
+
+        Useful for understanding the scheduling distribution in your project.
+
+        Returns:
+            Dict mapping interval names to lists of model names
+
+        Example:
+            summary = generator.get_model_intervals_summary()
+            # {'FIVE_MINUTE': ['model1', 'model2'], 'HOUR': ['model3'], ...}
+        """
+        if not self.models:
+            if not self.context:
+                self.load_sqlmesh_context()
+            self.extract_models()
+
+        summary = {}
+        for model_name, model_info in self.models.items():
+            interval_key = str(model_info.interval_unit) if model_info.interval_unit else "UNSCHEDULED"
+            if interval_key not in summary:
+                summary[interval_key] = []
+            summary[interval_key].append(model_name)
+
+        return summary
 
     def build_dag_structure(self) -> DAGStructure:
         """

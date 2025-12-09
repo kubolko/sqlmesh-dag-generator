@@ -389,7 +389,72 @@ logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")'''
 
     def _build_dynamic_model_discovery(self) -> str:
         """Build model discovery section"""
-        return '''# Discover SQLMesh models at DAG parse time
+        auto_schedule_code = ""
+        if self.config.airflow.auto_schedule and not self.config.airflow.schedule_interval:
+            auto_schedule_code = '''
+    # Auto-detect schedule from SQLMesh model intervals
+    def get_minimum_interval_cron(models_dict):
+        """Find the most frequent interval from models and return cron expression"""
+        if not models_dict:
+            return "@daily"
+        
+        intervals = []
+        for model in models_dict.values():
+            interval_unit = getattr(model, 'interval_unit', None)
+            if interval_unit:
+                intervals.append(str(interval_unit).upper().replace("INTERVALUNIT.", ""))
+        
+        if not intervals:
+            return "@daily"
+        
+        # Map intervals to minutes for comparison
+        frequency_map = {
+            "MINUTE": 1,
+            "FIVE_MINUTE": 5,
+            "TEN_MINUTE": 10,
+            "QUARTER_HOUR": 15,
+            "FIFTEEN_MINUTE": 15,
+            "HALF_HOUR": 30,
+            "THIRTY_MINUTE": 30,
+            "HOUR": 60,
+            "DAY": 1440,
+            "WEEK": 10080,
+            "MONTH": 43200,
+            "QUARTER": 129600,
+            "YEAR": 525600,
+        }
+        
+        # Find minimum frequency
+        min_interval = min(intervals, key=lambda x: frequency_map.get(x, 1440))
+        
+        # Convert to cron
+        cron_map = {
+            "MINUTE": "* * * * *",
+            "FIVE_MINUTE": "*/5 * * * *",
+            "TEN_MINUTE": "*/10 * * * *",
+            "QUARTER_HOUR": "*/15 * * * *",
+            "FIFTEEN_MINUTE": "*/15 * * * *",
+            "HALF_HOUR": "*/30 * * * *",
+            "THIRTY_MINUTE": "*/30 * * * *",
+            "HOUR": "@hourly",
+            "DAY": "@daily",
+            "WEEK": "@weekly",
+            "MONTH": "@monthly",
+            "QUARTER": "0 0 1 */3 *",
+            "YEAR": "@yearly",
+        }
+        
+        return cron_map.get(min_interval, "@daily")
+    
+    try:
+        RECOMMENDED_SCHEDULE = get_minimum_interval_cron(ctx.models)
+        logger.info(f"📅 Auto-detected schedule: {{RECOMMENDED_SCHEDULE}}")
+    except Exception as e:
+        logger.warning(f"Failed to auto-detect schedule: {{e}}, using @daily")
+        RECOMMENDED_SCHEDULE = "@daily"
+'''
+
+        return f'''# Discover SQLMesh models at DAG parse time
 logger.info("Loading SQLMesh context and discovering models...")
 try:
     ctx = Context(
@@ -398,26 +463,35 @@ try:
     )
     
     # Extract model information
-    discovered_models = {}
+    discovered_models = {{}}
     for model_name, model in ctx.models.items():
-        discovered_models[model_name] = {
+        discovered_models[model_name] = {{
             "fqn": model.fqn,
             "name": str(model.name),
             "dependencies": [str(dep.name) for dep in model.depends_on],
-        }
+        }}
     
-    logger.info(f"✓ Discovered {len(discovered_models)} SQLMesh models")
-    
+    logger.info(f"✓ Discovered {{{{len(discovered_models)}}}} SQLMesh models")
+{auto_schedule_code}    
 except Exception as e:
-    logger.error(f"Failed to load SQLMesh context: {e}")
+    logger.error(f"Failed to load SQLMesh context: {{{{e}}}}")
     # Create empty dict to prevent DAG parse errors
-    discovered_models = {}
+    discovered_models = {{}}
     logger.warning("DAG will be created with no tasks")'''
 
     def _build_dynamic_dag_definition(self) -> str:
         """Build DAG definition for dynamic DAG"""
         default_args = self._format_default_args()
-        schedule = f'"{self.config.airflow.schedule_interval}"' if self.config.airflow.schedule_interval else 'None'
+
+        # Support auto-scheduling in dynamic mode
+        if self.config.airflow.auto_schedule and not self.config.airflow.schedule_interval:
+            # Generate code to detect schedule at runtime - use variable directly
+            schedule = 'RECOMMENDED_SCHEDULE'
+            schedule_comment = '  # Auto-detected from SQLMesh models'
+        else:
+            schedule = f'"{self.config.airflow.schedule_interval}"' if self.config.airflow.schedule_interval else 'None'
+            schedule_comment = ''
+
         tags = repr(self.config.airflow.tags + ['dynamic', 'auto-generated'])
         description = f'"{self.config.airflow.description}"' if self.config.airflow.description else f'"Dynamic SQLMesh DAG: {self.config.airflow.dag_id}"'
 
@@ -431,7 +505,7 @@ except Exception as e:
         else:
             start_date_str = "datetime.now() - timedelta(days=1)"  # Default to yesterday
 
-        return f'''# Create DAG
+        return f'''# Create DAG{schedule_comment}
 with DAG(
     dag_id="{self.config.airflow.dag_id}",
     start_date={start_date_str},

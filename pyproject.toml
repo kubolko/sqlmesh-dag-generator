@@ -8,6 +8,14 @@ addopts = [
     "--strict-markers",
     "--tb=short",
 ]
+filterwarnings = [
+    # Ignore third-party dependency warnings
+    "ignore::DeprecationWarning:astor",
+    "ignore::DeprecationWarning:dateparser",
+    "ignore:.*json_encoders.*:DeprecationWarning",
+    # Ignore Airflow deprecation warnings (they're migrating their SDK)
+    "ignore:.*airflow.hooks.base.BaseHook.*",
+]
 
 [tool.coverage.run]
 source = ["sqlmesh_dag_generator"]
