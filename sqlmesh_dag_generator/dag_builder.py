@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from sqlmesh_dag_generator.config import DAGGeneratorConfig
 from sqlmesh_dag_generator.models import DAGStructure, SQLMeshModelInfo
+from sqlmesh_dag_generator.utils import get_interval_frequency_minutes
 
 
 class AirflowDAGBuilder:
@@ -17,6 +18,22 @@ class AirflowDAGBuilder:
     def __init__(self, config: DAGGeneratorConfig, dag_structure: DAGStructure):
         self.config = config
         self.dag_structure = dag_structure
+
+    def _get_expected_interval_minutes(self) -> Optional[int]:
+        intervals = [
+            get_interval_frequency_minutes(model.interval_unit)
+            for model in self.dag_structure.models.values()
+            if model.interval_unit is not None
+        ]
+        return min(intervals) if intervals else None
+
+    def _has_subhourly_incremental_models(self) -> bool:
+        for model in self.dag_structure.models.values():
+            interval_minutes = get_interval_frequency_minutes(model.interval_unit)
+            kind = str(model.kind or "").upper()
+            if interval_minutes < 60 and "INCREMENTAL" in kind:
+                return True
+        return False
 
     def build(self) -> str:
         """
@@ -92,12 +109,34 @@ class AirflowDAGBuilder:
                 "from kubernetes.client.models import V1EnvVar",
             ])
 
+        # Add TriggerDagRunOperator if trigger_dag_id is configured
+        if self.config.generation.trigger_dag_id:
+            imports.append("from airflow.operators.trigger_dagrun import TriggerDagRunOperator")
+
+        # Add EmptyOperator for source tables
+        if self.config.generation.include_source_tables:
+            imports.append("from airflow.operators.empty import EmptyOperator")
+
         imports.extend([
             "",
             "from sqlmesh import Context",
             "",
             "logger = logging.getLogger(__name__)",
         ])
+
+        # Add callback imports if configured
+        if self.config.airflow.on_failure_callback:
+            module_path = self.config.airflow.on_failure_callback.rsplit('.', 1)
+            if len(module_path) == 2:
+                imports.insert(4, f"from {module_path[0]} import {module_path[1]}")
+        if self.config.airflow.on_success_callback:
+            module_path = self.config.airflow.on_success_callback.rsplit('.', 1)
+            if len(module_path) == 2:
+                imports.insert(4, f"from {module_path[0]} import {module_path[1]}")
+        if self.config.airflow.sla_miss_callback:
+            module_path = self.config.airflow.sla_miss_callback.rsplit('.', 1)
+            if len(module_path) == 2:
+                imports.insert(4, f"from {module_path[0]} import {module_path[1]}")
 
         return "\n".join(imports)
 
@@ -128,6 +167,11 @@ class AirflowDAGBuilder:
         else:
             start_date_str = "datetime.now() - timedelta(days=1)"  # Default to yesterday
 
+        # Build optional DAG arguments
+        optional_args = ""
+        if self.config.airflow.sla_miss_callback:
+            optional_args += f"\n    sla_miss_callback={self.config.airflow.sla_miss_callback},"
+
         return f"""# DAG Definition
 dag = DAG(
     dag_id="{self.config.airflow.dag_id}",
@@ -137,7 +181,7 @@ dag = DAG(
     start_date={start_date_str},
     catchup={self.config.airflow.catchup},
     max_active_runs={self.config.airflow.max_active_runs},
-    tags={tags},
+    tags={tags},{optional_args}
 )"""
 
     def _format_default_args(self) -> str:
@@ -237,11 +281,30 @@ dag = DAG(
     logger.info(f"Model {model_name_escaped} completed successfully")
     return result'''
 
-        # Build the operator
+        # Build the operator with additional configuration
+        operator_args = [
+            f'task_id="{task_id}"',
+            f'python_callable={function_name}',
+            'dag=dag',
+        ]
+
+        # Add pool if configured
+        if self.config.generation.pool:
+            operator_args.append(f'pool="{self.config.generation.pool}"')
+            operator_args.append(f'pool_slots={self.config.generation.pool_slots}')
+
+        # Add SLA if configured
+        if self.config.airflow.sla:
+            operator_args.append(f'sla=timedelta(seconds={self.config.airflow.sla})')
+
+        # Add callbacks if configured
+        if self.config.airflow.on_failure_callback:
+            operator_args.append(f'on_failure_callback={self.config.airflow.on_failure_callback}')
+        if self.config.airflow.on_success_callback:
+            operator_args.append(f'on_success_callback={self.config.airflow.on_success_callback}')
+
         operator_def = f'''{task_id} = PythonOperator(
-    task_id="{task_id}",
-    python_callable={function_name},
-    dag=dag,
+    {(","+chr(10)+"    ").join(operator_args)},
 )'''
 
         return f"{func_def}\n\n{operator_def}"
@@ -327,6 +390,26 @@ dag = DAG(
         if len(dep_lines) == 1:
             dep_lines.append("# No dependencies")
 
+        # Add trigger downstream DAG if configured
+        if self.config.generation.trigger_dag_id:
+            trigger_conf = repr(self.config.generation.trigger_dag_conf or {})
+            dep_lines.append("")
+            dep_lines.append("# Trigger downstream DAG on completion")
+            dep_lines.append(f'''trigger_downstream = TriggerDagRunOperator(
+    task_id="trigger_{self.config.generation.trigger_dag_id}",
+    trigger_dag_id="{self.config.generation.trigger_dag_id}",
+    conf={trigger_conf},
+    dag=dag,
+)''')
+            # Find leaf tasks and set them as upstream
+            leaf_tasks = [
+                info.get_task_id()
+                for name, info in self.dag_structure.models.items()
+                if name not in {dep for m in self.dag_structure.models.values() for dep in m.dependencies}
+            ]
+            if leaf_tasks:
+                dep_lines.append(f"[{', '.join(leaf_tasks)}] >> trigger_downstream")
+
         return "\n".join(dep_lines)
 
     # ========================================================================
@@ -369,6 +452,8 @@ DO NOT EDIT MANUALLY - changes will be overwritten.
     def _build_dynamic_config(self) -> str:
         """Build configuration section for dynamic DAG using Airflow Variables"""
         # Use Airflow Variables for flexible configuration
+        expected_interval_minutes = self._get_expected_interval_minutes()
+        has_subhourly_incremental = self._has_subhourly_incremental_models()
         return f'''# SQLMesh Configuration (from Airflow Variables)
 # Set these in Airflow UI: Admin > Variables
 SQLMESH_PROJECT_PATH = Variable.get(
@@ -383,9 +468,20 @@ SQLMESH_GATEWAY = Variable.get(
     "sqlmesh_gateway", 
     default_var={f'"{self.config.sqlmesh.gateway}"' if self.config.sqlmesh.gateway else 'None'}
 )
+RECOVERY_MODE = "{self.config.airflow.recovery.mode}"
+RECOVERY_MAX_INTERVALS = {self.config.airflow.recovery.max_intervals}
+RECOVERY_FAIL_ON_EXCESS_GAP = {self.config.airflow.recovery.fail_on_excess_gap}
+EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minutes is not None else 'None'}
+HAS_SUBHOURLY_INCREMENTAL = {has_subhourly_incremental}
 
 logger.info(f"SQLMesh Project Path: {{SQLMESH_PROJECT_PATH}}")
-logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")'''
+logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")
+
+if HAS_SUBHOURLY_INCREMENTAL and not {self.config.airflow.catchup} and RECOVERY_MODE in ("disabled", "warn"):
+    logger.warning(
+        "Sub-hourly incremental SQLMesh models detected with catchup=False. "
+        "Missed intervals will not be fully replayed unless bounded recovery or manual replay is enabled."
+    )'''
 
     def _build_dynamic_model_discovery(self) -> str:
         """Build model discovery section"""
@@ -518,6 +614,101 @@ with DAG(
 ) as dag:
     
     tasks = {{}}
+    recovery_anchor = None
+
+    if RECOVERY_MODE != "disabled" and HAS_SUBHOURLY_INCREMENTAL and EXPECTED_INTERVAL_MINUTES:
+        def detect_interval_gap(**context):
+            prev_end = context.get("prev_data_interval_end_success")
+            current_start = context.get("data_interval_start") or context.get("execution_date")
+            payload = {{
+                "gap_intervals": 0,
+                "recovery_start": None,
+                "recovery_end": None,
+            }}
+
+            if not prev_end or not current_start:
+                logger.warning("Skipping SQLMesh integrity gap detection because Airflow interval context is incomplete.")
+                return payload
+
+            if isinstance(prev_end, str):
+                prev_end = datetime.fromisoformat(prev_end)
+            if isinstance(current_start, str):
+                current_start = datetime.fromisoformat(current_start)
+
+            gap_minutes = int((current_start - prev_end).total_seconds() // 60)
+            if gap_minutes <= 0:
+                return payload
+
+            gap_intervals = (gap_minutes + EXPECTED_INTERVAL_MINUTES - 1) // EXPECTED_INTERVAL_MINUTES
+            payload = {{
+                "gap_intervals": gap_intervals,
+                "recovery_start": prev_end.isoformat(),
+                "recovery_end": current_start.isoformat(),
+            }}
+
+            logger.warning(
+                f"Detected {{gap_intervals}} missing SQLMesh interval(s). Recovery window: {{prev_end}} -> {{current_start}}"
+            )
+
+            if RECOVERY_FAIL_ON_EXCESS_GAP and gap_intervals > RECOVERY_MAX_INTERVALS:
+                raise AirflowException(
+                    "Detected a SQLMesh interval gap larger than recovery.max_intervals. "
+                    "Manual replay is required before the DAG can continue."
+                )
+
+            return payload
+
+        sqlmesh_integrity_guard = PythonOperator(
+            task_id="sqlmesh_integrity_guard",
+            python_callable=detect_interval_gap,
+        )
+        tasks["sqlmesh_integrity_guard"] = sqlmesh_integrity_guard
+        recovery_anchor = sqlmesh_integrity_guard
+
+        if RECOVERY_MODE == "bounded_auto":
+            def replay_missing_intervals(**context):
+                gap_payload = context["ti"].xcom_pull(task_ids="sqlmesh_integrity_guard") or {{}}
+                gap_intervals = gap_payload.get("gap_intervals", 0)
+                if not gap_intervals:
+                    logger.info("No SQLMesh recovery backfill needed for this Airflow run.")
+                    return {{"status": "skipped", "gap_intervals": 0}}
+
+                if gap_intervals > RECOVERY_MAX_INTERVALS:
+                    message = (
+                        "Detected a SQLMesh interval gap larger than recovery.max_intervals. "
+                        "Skipping bounded recovery and leaving replay to manual intervention."
+                    )
+                    if RECOVERY_FAIL_ON_EXCESS_GAP:
+                        raise AirflowException(message)
+                    logger.warning(message)
+                    return {{"status": "skipped", "gap_intervals": gap_intervals}}
+
+                recovery_start = datetime.fromisoformat(gap_payload["recovery_start"])
+                recovery_end = datetime.fromisoformat(gap_payload["recovery_end"])
+                run_ctx = Context(
+                    paths=SQLMESH_PROJECT_PATH,
+                    gateway=SQLMESH_GATEWAY,
+                )
+                result = run_ctx.run(
+                    environment=SQLMESH_ENVIRONMENT,
+                    start=recovery_start,
+                    end=recovery_end,
+                    select_models=list(discovered_models.keys()),
+                )
+                return {{
+                    "status": result.name if hasattr(result, "name") else str(result),
+                    "gap_intervals": gap_intervals,
+                    "recovery_start": gap_payload["recovery_start"],
+                    "recovery_end": gap_payload["recovery_end"],
+                }}
+
+            sqlmesh_recovery_backfill = PythonOperator(
+                task_id="sqlmesh_recovery_backfill",
+                python_callable=replay_missing_intervals,
+            )
+            sqlmesh_integrity_guard >> sqlmesh_recovery_backfill
+            tasks["sqlmesh_recovery_backfill"] = sqlmesh_recovery_backfill
+            recovery_anchor = sqlmesh_recovery_backfill
     
     # Create task for each discovered model
     for model_name, model_info in discovered_models.items():
@@ -559,7 +750,12 @@ with DAG(
                     )
                     
                     logger.info(f"✓ Model {{model_display_name}} completed successfully")
-                    return result
+                    # Convert CompletionStatus enum to string for XCom serialization
+                    # Airflow cannot serialize enum types, so we return a simple dict
+                    return {{
+                        "status": result.name if hasattr(result, 'name') else str(result),
+                        "model": model_fqn,
+                    }}
                     
                 except SQLMeshError as e:
                     logger.error(f"✗ SQLMesh error in model {{model_display_name}}: {{e}}")
@@ -589,6 +785,9 @@ with DAG(
             if dep_name in tasks:
                 # Create dependency: upstream >> downstream
                 tasks[dep_name] >> current_task
+
+        if recovery_anchor and not model_info["dependencies"]:
+            recovery_anchor >> current_task
     
     logger.info(f"✓ DAG created with {{len(tasks)}} tasks")'''
 

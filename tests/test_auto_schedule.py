@@ -237,11 +237,23 @@ class TestAutoScheduleIntegration:
     """Integration tests for auto-scheduling"""
 
     @patch('sqlmesh_dag_generator.generator.Context')
-    def test_full_workflow_with_auto_schedule(self, mock_context):
+    def test_full_workflow_with_auto_schedule(self, mock_context, tmp_path):
         """Test complete workflow with auto-scheduling"""
         # Setup mock context
         mock_ctx = MagicMock()
         mock_context.return_value = mock_ctx
+
+        # Create a minimal valid SQLMesh project structure for validation.
+        (tmp_path / "models").mkdir()
+        (tmp_path / "config.yaml").write_text(
+            "default_gateway: local\n"
+            "gateways:\n"
+            "  local:\n"
+            "    connection:\n"
+            "      type: duckdb\n"
+            "      database: ':memory:'\n",
+            encoding="utf-8",
+        )
 
         # Create mock models with intervals
         five_min_interval = Mock()
@@ -260,7 +272,7 @@ class TestAutoScheduleIntegration:
 
         # Create generator with auto_schedule
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
+            sqlmesh_project_path=str(tmp_path),
             dag_id="test_dag",
             auto_schedule=True
         )

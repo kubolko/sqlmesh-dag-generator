@@ -11,9 +11,12 @@ Tests the main generator functionality including:
 import pytest
 import tempfile
 import shutil
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 from sqlmesh_dag_generator.config import DAGGeneratorConfig
+from sqlmesh_dag_generator.models import SQLMeshModelInfo
 
 
 @pytest.fixture
@@ -272,7 +275,12 @@ class TestSQLMeshDAGGenerator:
             "airflow": {
                 "dag_id": "my_dag",
                 "schedule_interval": "@daily",
-                "tags": ["sqlmesh", "test"]
+                "tags": ["sqlmesh", "test"],
+                "recovery": {
+                    "mode": "warn",
+                    "max_intervals": 4,
+                    "fail_on_excess_gap": True,
+                }
             },
             "generation": {
                 "mode": "dynamic",
@@ -287,6 +295,93 @@ class TestSQLMeshDAGGenerator:
         assert generator.config.airflow.dag_id == "my_dag"
         assert generator.config.airflow.schedule_interval == "@daily"
         assert "sqlmesh" in generator.config.airflow.tags
+        assert generator.config.airflow.recovery.mode == "warn"
+        assert generator.config.airflow.recovery.max_intervals == 4
+        assert generator.config.airflow.recovery.fail_on_excess_gap is True
+
+    def test_create_tasks_in_dag_adds_recovery_tasks_for_subhourly_incremental_models(self):
+        """Test opt-in recovery helper tasks are added for sub-hourly incremental projects."""
+        from airflow import DAG
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            recovery_mode="bounded_auto",
+        )
+        generator.models = {
+            "dwh.raw_5m": SQLMeshModelInfo(
+                name="dwh.raw_5m",
+                dependencies=set(),
+                interval_unit="FIVE_MINUTE",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+            "dwh.report": SQLMeshModelInfo(
+                name="dwh.report",
+                dependencies={"dwh.raw_5m"},
+                interval_unit="HOUR",
+                kind="FULL",
+            ),
+        }
+
+        with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
+            tasks = generator.create_tasks_in_dag(dag)
+
+        assert "sqlmesh_integrity_guard" in tasks
+        assert "sqlmesh_recovery_backfill" in tasks
+        assert "sqlmesh_recovery_backfill" in tasks["dwh.raw_5m"].upstream_task_ids
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_bounded_recovery_replays_full_missing_window(self, mock_context):
+        """Test bounded recovery replays from the previous successful interval boundary."""
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        run_result = MagicMock()
+        run_result.name = "SUCCESS"
+        run_ctx.run.return_value = run_result
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            recovery_mode="bounded_auto",
+        )
+        generator.models = {
+            "dwh.raw_5m": SQLMeshModelInfo(
+                name="dwh.raw_5m",
+                dependencies=set(),
+                interval_unit="FIVE_MINUTE",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+        }
+
+        with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
+            tasks = generator.create_tasks_in_dag(dag)
+
+        guard_task = tasks["sqlmesh_integrity_guard"]
+        recovery_task = tasks["sqlmesh_recovery_backfill"]
+
+        prev_end = datetime(2024, 1, 1, 0, 0)
+        current_start = datetime(2024, 1, 1, 0, 15)
+        gap_payload = guard_task.python_callable(
+            prev_data_interval_end_success=prev_end,
+            data_interval_start=current_start,
+        )
+
+        assert gap_payload["gap_intervals"] == 3
+        assert gap_payload["recovery_start"] == prev_end.isoformat()
+        assert gap_payload["recovery_end"] == current_start.isoformat()
+
+        task_instance = MagicMock()
+        task_instance.xcom_pull.return_value = gap_payload
+        recovery_result = recovery_task.python_callable(ti=task_instance)
+
+        run_ctx.run.assert_called_once()
+        _, run_kwargs = run_ctx.run.call_args
+        assert run_kwargs["start"] == prev_end
+        assert run_kwargs["end"] == current_start
+        assert run_kwargs["select_models"] == ["dwh.raw_5m"]
+        assert recovery_result["gap_intervals"] == 3
 
 
 class TestDynamicFeatures:
@@ -317,6 +412,22 @@ class TestDynamicFeatures:
         # Should have model discovery logic
         assert "ctx.models.items()" in dag_code
         assert "discovered_models" in dag_code
+
+    def test_dynamic_dag_includes_recovery_controls(self, demo_sqlmesh_project):
+        """Test that generated dynamic DAGs include recovery configuration and helper tasks."""
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path=demo_sqlmesh_project,
+            dag_id="test",
+            recovery_mode="bounded_auto",
+            recovery_max_intervals=8,
+        )
+
+        dag_code = generator.generate_dynamic_dag()
+
+        assert "RECOVERY_MODE" in dag_code
+        assert "RECOVERY_MAX_INTERVALS" in dag_code
+        assert "sqlmesh_integrity_guard" in dag_code
+        assert "sqlmesh_recovery_backfill" in dag_code
 
     def test_error_handling_in_dynamic_dag(self, demo_sqlmesh_project):
         """Test that dynamic DAG has proper error handling"""

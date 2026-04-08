@@ -266,7 +266,19 @@ def _build_config_from_connection(conn: Any, conn_type: str) -> Dict[str, Any]:
     }
 
     # Add connection details based on type
-    if conn_type in ["postgres", "postgresql", "redshift"]:
+    if conn_type == "redshift":
+        # Redshift uses 2-part naming (schema.table), not 3-part (catalog.schema.table)
+        # Note: default_catalog is NOT a valid Redshift connection config field
+        # It should be set at the SQLMesh config level, not connection level
+        database = conn.schema or "dev"
+        config.update({
+            "host": conn.host,
+            "port": conn.port or 5439,  # Redshift default port
+            "user": conn.login,
+            "password": conn.password,
+            "database": database,
+        })
+    elif conn_type in ["postgres", "postgresql"]:
         config.update({
             "host": conn.host,
             "port": conn.port or 5432,

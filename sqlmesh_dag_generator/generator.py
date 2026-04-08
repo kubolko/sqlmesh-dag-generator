@@ -1,6 +1,7 @@
 """
 Core DAG generator module
 """
+from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Union, Any, List
@@ -11,8 +12,13 @@ from sqlmesh.core.model import Model
 from sqlmesh_dag_generator.config import DAGGeneratorConfig, SQLMeshConfig, AirflowConfig, GenerationConfig
 from sqlmesh_dag_generator.models import SQLMeshModelInfo, DAGStructure
 from sqlmesh_dag_generator.dag_builder import AirflowDAGBuilder
+from sqlmesh_dag_generator.security import install_credential_filter, validate_connection_security
+from sqlmesh_dag_generator.utils import get_interval_frequency_minutes, sanitize_task_id
 
 logger = logging.getLogger(__name__)
+
+# Install credential filter globally on first import
+install_credential_filter()
 
 
 class SQLMeshDAGGenerator:
@@ -119,10 +125,15 @@ class SQLMeshDAGGenerator:
         credential_resolver = kwargs.get('credential_resolver')
 
         if connection is not None:
+            # Validate security before resolving
+            validate_connection_security(connection)
+
             from sqlmesh_dag_generator.airflow_utils import resolve_credentials
             resolved_connection = resolve_credentials(connection, resolver_type=credential_resolver)
 
         if state_connection is not None:
+            validate_connection_security(state_connection)
+
             from sqlmesh_dag_generator.airflow_utils import resolve_credentials
             resolved_state_connection = resolve_credentials(state_connection, resolver_type=credential_resolver)
 
@@ -132,10 +143,11 @@ class SQLMeshDAGGenerator:
             # Build config from individual parameters
             sqlmesh_config = SQLMeshConfig(
                 project_path=sqlmesh_project_path or "./",
-                environment=kwargs.get("environment", "prod"),
+                environment=kwargs.get("environment", ""),  # Empty string = no virtual env (production)
                 gateway=kwargs.get("gateway"),
                 connection_config=resolved_connection,
                 state_connection_config=resolved_state_connection,
+                default_catalog=kwargs.get("default_catalog"),
                 config_overrides=kwargs.get("config_overrides", {}),
             )
 
@@ -147,6 +159,17 @@ class SQLMeshDAGGenerator:
                 tags=kwargs.get("tags", ["sqlmesh"]),
                 catchup=kwargs.get("catchup", False),
                 max_active_runs=kwargs.get("max_active_runs", 1),
+                on_failure_callback=kwargs.get("on_failure_callback"),
+                on_success_callback=kwargs.get("on_success_callback"),
+                sla_miss_callback=kwargs.get("sla_miss_callback"),
+                sla=kwargs.get("sla"),
+            )
+            airflow_config.recovery.mode = kwargs.get("recovery_mode", airflow_config.recovery.mode)
+            airflow_config.recovery.max_intervals = kwargs.get(
+                "recovery_max_intervals", airflow_config.recovery.max_intervals
+            )
+            airflow_config.recovery.fail_on_excess_gap = kwargs.get(
+                "recovery_fail_on_excess_gap", airflow_config.recovery.fail_on_excess_gap
             )
 
             generation_config = GenerationConfig(
@@ -156,6 +179,23 @@ class SQLMeshDAGGenerator:
                 parallel_tasks=kwargs.get("parallel_tasks", True),
                 include_models=kwargs.get("include_models"),
                 exclude_models=kwargs.get("exclude_models"),
+                model_pattern=kwargs.get("model_pattern"),
+                include_source_tables=kwargs.get("include_source_tables", True),  # Default: enabled
+                return_value=kwargs.get("return_value", True),
+                auto_replan_on_change=kwargs.get("auto_replan_on_change", False),
+                replan_timeout_hours=kwargs.get("replan_timeout_hours", 6),  # Default: 6 hours for backfills
+                skip_audits=kwargs.get("skip_audits", False),
+                enable_health_check=kwargs.get("enable_health_check", False),
+                include_tags=kwargs.get("include_tags"),
+                exclude_tags=kwargs.get("exclude_tags"),
+                pool=kwargs.get("pool"),
+                pool_slots=kwargs.get("pool_slots", 1),
+                trigger_dag_id=kwargs.get("trigger_dag_id"),
+                trigger_dag_conf=kwargs.get("trigger_dag_conf"),
+                # Plan optimization options
+                skip_backfill=kwargs.get("skip_backfill", False),
+                plan_only=kwargs.get("plan_only", False),
+                log_plan_details=kwargs.get("log_plan_details", True),
             )
 
             self.config = DAGGeneratorConfig(
@@ -167,6 +207,19 @@ class SQLMeshDAGGenerator:
         self.context: Optional[Context] = None
         self.models: Dict[str, SQLMeshModelInfo] = {}
         self.dag_structure: Optional[DAGStructure] = None
+        self.merged_config = None  # Store merged config for runtime task execution
+        self.runtime_gateway = None  # Store gateway name for runtime task execution
+
+        # Validate configuration and show helpful warnings
+        self._validate_config()
+
+    def _validate_config(self):
+        """Validate configuration and show helpful warnings."""
+        # Note: default_catalog is NOT a valid SQLMesh config option.
+        # SQLMesh automatically determines the default catalog from the database connection.
+        # For Redshift (2-part naming), SQLMesh handles this automatically when configured
+        # with a valid Redshift connection.
+        return None
 
     def load_sqlmesh_context(self) -> Context:
         """
@@ -178,9 +231,19 @@ class SQLMeshDAGGenerator:
         Returns:
             SQLMesh Context object
         """
+        from sqlmesh_dag_generator.validation import validate_project_structure, check_resource_availability
+
         logger.info(f"Loading SQLMesh context from: {self.config.sqlmesh.project_path}")
 
+        # Validate project structure first
+        validate_project_structure(self.config.sqlmesh.project_path)
+
+        # Check system resources
+        check_resource_availability()
+
         try:
+            import os
+
             # Build context kwargs
             context_kwargs = {
                 "paths": self.config.sqlmesh.project_path,
@@ -192,39 +255,94 @@ class SQLMeshDAGGenerator:
                 context_kwargs["config"] = self.config.sqlmesh.config_path
 
             # If runtime connection config is provided, we need to merge it with the config
-            if self.config.sqlmesh.connection_config or self.config.sqlmesh.state_connection_config or self.config.sqlmesh.config_overrides:
+            # Also check for SQLMESH_CACHE_DIR environment variable
+            cache_dir = os.environ.get("SQLMESH_CACHE_DIR")
+
+            if self.config.sqlmesh.connection_config or self.config.sqlmesh.state_connection_config or self.config.sqlmesh.config_overrides or cache_dir:
                 from sqlmesh.core.config import Config
 
-                # Load base config from file or use defaults
-                if self.config.sqlmesh.config_path:
-                    base_config = Config.load(self.config.sqlmesh.config_path)
-                else:
-                    # Try to load from project path
-                    try:
-                        base_config = Config.load(Path(self.config.sqlmesh.project_path) / "config.yaml")
-                    except:
-                        base_config = Config()
+                # Determine gateway name for runtime connections
+                # If gateway is not specified, use "default" as the gateway name
+                gateway_name = self.config.sqlmesh.gateway or "default"
 
-                # Apply runtime connection config
-                config_dict = base_config.dict()
+                # Start with a minimal base config dict
+                config_dict = {
+                    "gateways": {},
+                    "default_gateway": gateway_name,
+                }
+
+                # Try to load existing config to preserve other settings
+                try:
+                    if self.config.sqlmesh.config_path:
+                        base_config = Config.load(self.config.sqlmesh.config_path, gateway=None)
+                    else:
+                        config_path = Path(self.config.sqlmesh.project_path) / "config.yaml"
+                        if config_path.exists():
+                            base_config = Config.load(config_path, gateway=None)
+                        else:
+                            base_config = None
+
+                    if base_config:
+                        # Merge settings from base config (but NOT gateway connections - we'll override those)
+                        base_dict = base_config.dict()
+                        # Preserve non-gateway settings
+                        for key in base_dict:
+                            if key not in ["gateways", "default_gateway"]:
+                                config_dict[key] = base_dict[key]
+                except Exception as e:
+                    logger.warning(f"Could not load base config, using minimal config: {e}")
+
+                logger.info(f"Configuring runtime connections for gateway: {gateway_name}")
+
+                # Create gateway config with runtime connections
+                if gateway_name not in config_dict["gateways"]:
+                    config_dict["gateways"][gateway_name] = {}
 
                 # Merge connection config for the gateway
                 if self.config.sqlmesh.connection_config:
-                    gateway_name = self.config.sqlmesh.gateway or config_dict.get("default_gateway", "default")
-                    if "gateways" not in config_dict:
-                        config_dict["gateways"] = {}
-                    if gateway_name not in config_dict["gateways"]:
-                        config_dict["gateways"][gateway_name] = {}
-                    config_dict["gateways"][gateway_name]["connection"] = self.config.sqlmesh.connection_config
+                    connection_config = self.config.sqlmesh.connection_config.copy()
+
+                    # Handle default_catalog for Redshift connections
+                    # For Redshift, keep default_catalog in connection config
+                    # SQLMesh uses this to determine which catalog to omit from SQL generation
+                    if connection_config.get("default_catalog"):
+                        logger.info(f"Redshift default_catalog: {connection_config['default_catalog']}")
+
+                    config_dict["gateways"][gateway_name]["connection"] = connection_config
+                    logger.info(f"Runtime connection configured for gateway: {gateway_name}")
+                    logger.debug(f"Connection config: {connection_config}")
 
                 # Merge state connection config
                 if self.config.sqlmesh.state_connection_config:
-                    gateway_name = self.config.sqlmesh.gateway or config_dict.get("default_gateway", "default")
-                    if "gateways" not in config_dict:
-                        config_dict["gateways"] = {}
-                    if gateway_name not in config_dict["gateways"]:
-                        config_dict["gateways"][gateway_name] = {}
                     config_dict["gateways"][gateway_name]["state_connection"] = self.config.sqlmesh.state_connection_config
+                    logger.info(f"Runtime state connection configured for gateway: {gateway_name}")
+                    logger.debug(f"State connection config: {self.config.sqlmesh.state_connection_config}")
+
+                # Note: default_catalog is NOT a valid SQLMesh Config field.
+                # It is automatically determined from the database connection.
+                # If user passed default_catalog, log a warning but don't set it.
+                if self.config.sqlmesh.default_catalog:
+                    logger.warning(
+                        f"default_catalog='{self.config.sqlmesh.default_catalog}' was provided, "
+                        f"but this is not a SQLMesh config option. SQLMesh automatically determines "
+                        f"the default catalog from the database connection. This parameter will be ignored."
+                    )
+
+                # Configure cache directory from environment variable
+                if cache_dir:
+                    logger.warning(
+                        f"SQLMESH_CACHE_DIR is set to: {cache_dir}\n"
+                        f"\n"
+                        f"⚠️  This environment variable is NOT needed if you're using EFS!\n"
+                        f"\n"
+                        f"For AWS Fargate + EFS:\n"
+                        f"  1. Remove SQLMESH_CACHE_DIR environment variable\n"
+                        f"  2. Mount EFS at /opt/airflow/core with readOnly=false\n"
+                        f"  3. Cache at /opt/airflow/core/sqlmesh_project/.cache will work automatically\n"
+                        f"\n"
+                        f"See: docs/YOUR_SETUP_FIX.md for details\n"
+                    )
+
 
                 # Apply any other config overrides
                 if self.config.sqlmesh.config_overrides:
@@ -233,6 +351,8 @@ class SQLMeshDAGGenerator:
                 # Create new config from merged dict
                 merged_config = Config.parse_obj(config_dict)
                 context_kwargs["config"] = merged_config
+                self.merged_config = merged_config  # Store for runtime task execution
+                self.runtime_gateway = gateway_name  # Store gateway name for runtime
 
             self.context = Context(**context_kwargs)
             logger.info(f"Successfully loaded SQLMesh context")
@@ -256,6 +376,12 @@ class SQLMeshDAGGenerator:
         Returns:
             Dictionary mapping model names to SQLMeshModelInfo objects
         """
+        from sqlmesh_dag_generator.validation import (
+            validate_no_circular_dependencies,
+            validate_missing_dependencies,
+            estimate_dag_complexity
+        )
+
         if not self.context:
             self.load_sqlmesh_context()
 
@@ -275,8 +401,8 @@ class SQLMeshDAGGenerator:
             logger.warning("Could not find models in context")
 
         for model_name, model in sqlmesh_models.items():
-            # Filter models based on include/exclude patterns
-            if not self._should_include_model(model_name):
+            # Filter models based on include/exclude patterns and tags
+            if not self._should_include_model(model_name, model):
                 continue
 
             model_info = self._extract_model_info(model_name, model)
@@ -285,10 +411,25 @@ class SQLMeshDAGGenerator:
 
         self.models = models
         logger.info(f"Extracted {len(models)} models")
+
+        # Validate dependencies
+        if len(models) > 0:
+            validate_no_circular_dependencies(models)
+            validate_missing_dependencies(models)
+            complexity = estimate_dag_complexity(models)
+            logger.info(
+                f"DAG complexity: {complexity['total_models']} models, "
+                f"max depth: {complexity['max_depth']}, "
+                f"{complexity['orphan_models']} orphans, "
+                f"{complexity['leaf_models']} leaves"
+            )
+
         return models
 
-    def _should_include_model(self, model_name: str) -> bool:
+    def _should_include_model(self, model_name: str, model: Model = None) -> bool:
         """Check if a model should be included based on filters"""
+        import re
+
         # Check include patterns
         if self.config.generation.include_models:
             if model_name not in self.config.generation.include_models:
@@ -298,6 +439,31 @@ class SQLMeshDAGGenerator:
         if self.config.generation.exclude_models:
             if model_name in self.config.generation.exclude_models:
                 return False
+
+        # Check model_pattern (regex)
+        if self.config.generation.model_pattern:
+            pattern = self.config.generation.model_pattern
+            if not re.match(pattern, model_name):
+                logger.debug(f"Model {model_name} excluded by pattern: {pattern}")
+                return False
+
+        # Tag-based filtering (requires model object)
+        if model is not None:
+            model_tags = set(getattr(model, 'tags', []) or [])
+
+            # Check include_tags - model must have at least one of these tags
+            if self.config.generation.include_tags:
+                include_tags = set(self.config.generation.include_tags)
+                if not model_tags.intersection(include_tags):
+                    logger.debug(f"Model {model_name} excluded: no matching include_tags")
+                    return False
+
+            # Check exclude_tags - model must not have any of these tags
+            if self.config.generation.exclude_tags:
+                exclude_tags = set(self.config.generation.exclude_tags)
+                if model_tags.intersection(exclude_tags):
+                    logger.debug(f"Model {model_name} excluded: has exclude_tags")
+                    return False
 
         return True
 
@@ -342,6 +508,41 @@ class SQLMeshDAGGenerator:
             description=description,
             model=model,
         )
+
+    def get_source_tables(self, model_name: str) -> List[str]:
+        """
+        Extract source tables (raw tables) that a model reads from.
+
+        These are tables that are NOT SQLMesh models (e.g., raw.event_hub_all_mt).
+
+        Args:
+            model_name: Name of the SQLMesh model
+
+        Returns:
+            List of source table names
+        """
+        if model_name not in self.models:
+            return []
+
+        model_info = self.models[model_name]
+        model = model_info.model
+
+        source_tables = []
+
+        # SQLMesh models have a 'source_tables' or 'depends_on_past' attribute
+        # that lists external tables they read from
+        if hasattr(model, 'source_tables'):
+            source_tables = list(model.source_tables)
+        elif hasattr(model, 'depends_on'):
+            # Filter out SQLMesh models from dependencies
+            # Source tables are dependencies that are NOT in self.models
+            all_deps = model.depends_on if model.depends_on else set()
+            source_tables = [
+                dep for dep in all_deps
+                if dep not in self.models
+            ]
+
+        return source_tables
 
     def get_recommended_schedule(self) -> str:
         """
@@ -413,6 +614,63 @@ class SQLMeshDAGGenerator:
 
         return summary
 
+    def get_expected_interval_minutes(self) -> Optional[int]:
+        """Return the minimum configured model interval in minutes."""
+        if not self.models:
+            if not self.context:
+                self.load_sqlmesh_context()
+            self.extract_models()
+
+        intervals = [
+            get_interval_frequency_minutes(model.interval_unit)
+            for model in self.models.values()
+            if model.interval_unit is not None
+        ]
+        return min(intervals) if intervals else None
+
+    def has_subhourly_incremental_models(self) -> bool:
+        """Return True when the project contains sub-hourly incremental models."""
+        if not self.models:
+            if not self.context:
+                self.load_sqlmesh_context()
+            self.extract_models()
+
+        for model in self.models.values():
+            interval_minutes = get_interval_frequency_minutes(model.interval_unit)
+            kind = str(model.kind or "").upper()
+            if interval_minutes < 60 and "INCREMENTAL" in kind:
+                return True
+
+        return False
+
+    def _integrity_warning_message(self) -> Optional[str]:
+        """Describe when Airflow scheduling can leave SQLMesh completeness gaps."""
+        if self.config.airflow.catchup or not self.has_subhourly_incremental_models():
+            return None
+
+        recovery_mode = self.config.airflow.recovery.mode
+        if recovery_mode == "bounded_auto":
+            return None
+
+        if recovery_mode == "warn":
+            return (
+                "Sub-hourly incremental SQLMesh models detected with catchup=False. "
+                "recovery_mode='warn' will detect missed Airflow intervals, but it will not replay them automatically. "
+                "Use recovery_mode='bounded_auto' or a manual replay path if outage completeness matters."
+            )
+
+        return (
+            "Sub-hourly incremental SQLMesh models detected with catchup=False. Missed Airflow intervals "
+            "will not be replayed automatically after downtime. Consider enabling recovery_mode='warn' or "
+            "recovery_mode='bounded_auto', enabling Airflow catchup, or operating a manual replay path."
+        )
+
+    def _log_integrity_warning_if_needed(self) -> None:
+        """Emit a runtime warning for potentially incomplete outage recovery setups."""
+        warning_message = self._integrity_warning_message()
+        if warning_message:
+            logger.warning(warning_message)
+
     def build_dag_structure(self) -> DAGStructure:
         """
         Build the DAG structure from extracted models.
@@ -422,6 +680,8 @@ class SQLMeshDAGGenerator:
         """
         if not self.models:
             self.extract_models()
+
+        self._log_integrity_warning_if_needed()
 
         logger.info("Building DAG structure")
 
@@ -450,6 +710,8 @@ class SQLMeshDAGGenerator:
         if not self.models:
             self.extract_models()
 
+        self._log_integrity_warning_if_needed()
+
         if not self.dag_structure:
             self.build_dag_structure()
 
@@ -462,7 +724,7 @@ class SQLMeshDAGGenerator:
             output_path = self._get_output_path()
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(dag_code)
 
             logger.info(f"DAG file written to: {output_path}")
@@ -508,7 +770,7 @@ class SQLMeshDAGGenerator:
             output_path = self._get_output_path()
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(output_path, "w") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(dag_code)
 
             logger.info(f"Dynamic DAG file written to: {output_path}")
@@ -517,7 +779,7 @@ class SQLMeshDAGGenerator:
 
         return dag_code
 
-    def create_tasks_in_dag(self, dag):
+    def create_tasks_in_dag(self, dag, models: Optional[List[str]] = None):
         """
         Create Airflow tasks directly inside a DAG context.
 
@@ -530,20 +792,395 @@ class SQLMeshDAGGenerator:
 
         Args:
             dag: Airflow DAG object
+            models: Optional list of model names to include (partial run)
 
         Returns:
             Dictionary of created tasks {model_name: task}
         """
         from airflow.operators.python import PythonOperator
+        from airflow.operators.empty import EmptyOperator
 
         # Load models if not already loaded
         if not self.models:
             self.extract_models()
 
-        tasks = {}
+        # Filter models if specified
+        target_models = self.models
+        if models:
+            target_models = {k: v for k, v in self.models.items() if k in models}
+            logger.info(f"Filtering DAG to {len(target_models)} models: {list(target_models.keys())}")
 
-        # Create a task for each model
-        for model_name, model_info in self.models.items():
+        self._log_integrity_warning_if_needed()
+
+        tasks = {}
+        source_table_tasks = {}
+        recovery_config = self.config.airflow.recovery
+        expected_interval_minutes = self.get_expected_interval_minutes()
+
+        # Step -1: Create Health Check Task (if enabled)
+        health_check_task = None
+        if self.config.generation.enable_health_check:
+            def run_health_check(**context):
+                from sqlmesh import Context
+                logger.info("Running SQLMesh health check...")
+                
+                # Build context kwargs
+                context_kwargs = {
+                    "paths": self.config.sqlmesh.project_path,
+                }
+                if self.merged_config is not None:
+                    context_kwargs["config"] = self.merged_config
+                    if self.runtime_gateway is not None:
+                        context_kwargs["gateway"] = self.runtime_gateway
+                else:
+                    context_kwargs["gateway"] = self.config.sqlmesh.gateway
+
+                # Load context
+                ctx = Context(**context_kwargs)
+                
+                # Check connection
+                logger.info(f"Checking connection to gateway: {ctx.gateway}")
+                # Simple query to verify connection
+                try:
+                    ctx.engine_adapter.fetchone("SELECT 1")
+                    logger.info("✅ Database connection successful")
+                except Exception as e:
+                    raise RuntimeError(f"❌ Database connection failed: {e}")
+                
+                # Check environment
+                env_name = self.config.sqlmesh.environment
+                if env_name:
+                    logger.info(f"Checking environment: {env_name}")
+                    # This will fail if environment doesn't exist and we try to use it
+                    # But for now just logging that we are using it
+                
+                return "Health check passed"
+
+            health_check_task = PythonOperator(
+                task_id="sqlmesh_health_check",
+                python_callable=run_health_check,
+                dag=dag
+            )
+            logger.info("Created health check task: sqlmesh_health_check")
+
+        # Step 0: Create Replan Task (if enabled)
+        replan_task = None
+        if self.config.generation.auto_replan_on_change:
+            def run_replan(**context):
+                """
+                Optimized replan function that:
+                1. Detects "no changes" scenarios and skips apply
+                2. Supports skip_backfill option to skip when backfill is needed
+                3. Supports plan_only mode for review without apply
+                4. Provides detailed logging for each phase
+                """
+                from sqlmesh import Context
+                import time
+
+                start_time = time.time()
+                log_details = self.config.generation.log_plan_details
+
+                # Build context kwargs - use merged config if available
+                context_kwargs = {
+                    "paths": self.config.sqlmesh.project_path,
+                }
+
+                # Use merged config and runtime gateway if they were created
+                if self.merged_config is not None:
+                    context_kwargs["config"] = self.merged_config
+                    if self.runtime_gateway is not None:
+                        context_kwargs["gateway"] = self.runtime_gateway
+                else:
+                    context_kwargs["gateway"] = self.config.sqlmesh.gateway
+
+                # Phase 1: Load SQLMesh context
+                logger.info("Phase 1/3: Loading SQLMesh context...")
+                ctx_start = time.time()
+                run_ctx = Context(**context_kwargs)
+                ctx_duration = time.time() - ctx_start
+                logger.info(f"Context loaded in {ctx_duration:.2f}s")
+
+                # Phase 2: Compute plan WITHOUT applying first
+                logger.info("Phase 2/3: Computing plan (checking for changes)...")
+                plan_start = time.time()
+                plan = run_ctx.plan(
+                    environment=self.config.sqlmesh.environment,
+                    auto_apply=False,  # Don't apply yet - just compute the plan
+                    no_prompts=True,
+                )
+                plan_duration = time.time() - plan_start
+                logger.info(f"Plan computed in {plan_duration:.2f}s")
+
+                # Log plan details if enabled
+                if log_details:
+                    logger.info(f"  - has_changes: {plan.has_changes}")
+                    logger.info(f"  - requires_backfill: {plan.requires_backfill}")
+                    if plan.new_snapshots:
+                        logger.info(f"  - new_snapshots: {len(plan.new_snapshots)}")
+                    if plan.modified_snapshots:
+                        logger.info(f"  - modified_snapshots: {len(plan.modified_snapshots)}")
+                    if plan.missing_intervals:
+                        logger.info(f"  - missing_intervals: {len(plan.missing_intervals)} model(s)")
+
+                # Check if there are actual changes
+                if not plan.has_changes and not plan.requires_backfill:
+                    total_duration = time.time() - start_time
+                    logger.info(f"✅ No model changes detected, skipping apply")
+                    logger.info(f"Total time: {total_duration:.2f}s (saved from full backfill)")
+                    return {
+                        "status": "skipped",
+                        "reason": "no_changes",
+                        "duration_seconds": total_duration,
+                        "context_load_seconds": ctx_duration,
+                        "plan_compute_seconds": plan_duration,
+                    }
+
+                # Plan-only mode: just report what would be done
+                if self.config.generation.plan_only:
+                    total_duration = time.time() - start_time
+                    logger.info(f"📋 Plan-only mode: changes detected but not applying")
+                    if plan.has_changes:
+                        logger.info(f"  - Would apply model changes")
+                    if plan.requires_backfill:
+                        logger.info(f"  - Would run backfill")
+                    logger.info(f"Total time: {total_duration:.2f}s")
+                    return {
+                        "status": "plan_only",
+                        "reason": "plan_only_mode",
+                        "has_changes": plan.has_changes,
+                        "requires_backfill": plan.requires_backfill,
+                        "duration_seconds": total_duration,
+                    }
+
+                # Skip backfill option: skip apply if backfill is required
+                if self.config.generation.skip_backfill and plan.requires_backfill:
+                    total_duration = time.time() - start_time
+                    logger.warning(f"⏭️  Backfill required but skip_backfill=True, skipping apply")
+                    logger.info(f"  - Run 'sqlmesh plan --auto-apply' manually or via CI/CD to apply changes")
+                    logger.info(f"Total time: {total_duration:.2f}s")
+                    return {
+                        "status": "skipped",
+                        "reason": "backfill_skipped",
+                        "has_changes": plan.has_changes,
+                        "requires_backfill": plan.requires_backfill,
+                        "duration_seconds": total_duration,
+                    }
+
+                # Phase 3: Apply the plan
+                logger.info("Phase 3/3: Applying plan...")
+                if plan.has_changes:
+                    logger.info(f"  - Applying model changes...")
+                if plan.requires_backfill:
+                    logger.info(f"  - Running backfill (this may take a while)...")
+
+                apply_start = time.time()
+                run_ctx.apply(plan)
+                apply_duration = time.time() - apply_start
+                logger.info(f"Plan applied in {apply_duration:.2f}s")
+
+                total_duration = time.time() - start_time
+                logger.info(f"✅ Total time: {total_duration:.2f}s")
+                return {
+                    "status": "applied",
+                    "has_changes": plan.has_changes,
+                    "requires_backfill": plan.requires_backfill,
+                    "duration_seconds": total_duration,
+                    "context_load_seconds": ctx_duration,
+                    "plan_compute_seconds": plan_duration,
+                    "apply_seconds": apply_duration,
+                }
+
+            from datetime import timedelta as td
+            replan_task = PythonOperator(
+                task_id="sqlmesh_plan_apply",
+                python_callable=run_replan,
+                dag=dag,
+                # Use custom timeout for replan task - initial backfills can take hours!
+                execution_timeout=td(hours=self.config.generation.replan_timeout_hours),
+            )
+            logger.info(f"Created auto-replan task: sqlmesh_plan_apply (timeout: {self.config.generation.replan_timeout_hours}h)")
+
+            # Link health check to replan if both exist
+            if health_check_task:
+                health_check_task >> replan_task
+
+        recovery_anchor_task = None
+        if (
+            recovery_config.mode != "disabled"
+            and expected_interval_minutes
+            and self.has_subhourly_incremental_models()
+        ):
+            def detect_interval_gap(**context):
+                prev_end = context.get("prev_data_interval_end_success")
+                current_start = context.get("data_interval_start") or context.get("execution_date")
+                payload = {
+                    "gap_intervals": 0,
+                    "recovery_start": None,
+                    "recovery_end": None,
+                }
+
+                if not prev_end or not current_start:
+                    logger.warning(
+                        "Skipping SQLMesh integrity gap detection because Airflow interval context is incomplete."
+                    )
+                    return payload
+
+                if isinstance(prev_end, str):
+                    prev_end = datetime.fromisoformat(prev_end)
+                if isinstance(current_start, str):
+                    current_start = datetime.fromisoformat(current_start)
+
+                gap_minutes = int((current_start - prev_end).total_seconds() // 60)
+                if gap_minutes <= 0:
+                    return payload
+
+                gap_intervals = (gap_minutes + expected_interval_minutes - 1) // expected_interval_minutes
+                payload = {
+                    "gap_intervals": gap_intervals,
+                    "recovery_start": prev_end.isoformat(),
+                    "recovery_end": current_start.isoformat(),
+                }
+                logger.warning(
+                    "Detected %s missing SQLMesh interval(s) before %s. Recovery window: %s -> %s.",
+                    gap_intervals,
+                    current_start,
+                    prev_end,
+                    current_start,
+                )
+
+                if (
+                    recovery_config.fail_on_excess_gap
+                    and gap_intervals > recovery_config.max_intervals
+                ):
+                    raise RuntimeError(
+                        "Detected a SQLMesh interval gap larger than recovery.max_intervals. "
+                        "Manual replay is required before the DAG can continue."
+                    )
+
+                return payload
+
+            integrity_task = PythonOperator(
+                task_id="sqlmesh_integrity_guard",
+                python_callable=detect_interval_gap,
+                dag=dag,
+            )
+            tasks["sqlmesh_integrity_guard"] = integrity_task
+
+            if replan_task:
+                replan_task >> integrity_task
+            elif health_check_task:
+                health_check_task >> integrity_task
+
+            recovery_anchor_task = integrity_task
+
+            if recovery_config.mode == "bounded_auto":
+                selected_models = list(target_models.keys())
+
+                def replay_missing_intervals(**context):
+                    task_instance = context["ti"]
+                    gap_payload = task_instance.xcom_pull(task_ids="sqlmesh_integrity_guard") or {}
+                    gap_intervals = gap_payload.get("gap_intervals", 0)
+                    if not gap_intervals:
+                        logger.info("No SQLMesh recovery backfill needed for this Airflow run.")
+                        return {"status": "skipped", "gap_intervals": 0}
+
+                    if gap_intervals > recovery_config.max_intervals:
+                        message = (
+                            "Detected a SQLMesh interval gap larger than recovery.max_intervals. "
+                            "Skipping bounded recovery and leaving replay to manual intervention."
+                        )
+                        if recovery_config.fail_on_excess_gap:
+                            raise RuntimeError(message)
+                        logger.warning(message)
+                        return {"status": "skipped", "gap_intervals": gap_intervals}
+
+                    recovery_start = datetime.fromisoformat(gap_payload["recovery_start"])
+                    recovery_end = datetime.fromisoformat(gap_payload["recovery_end"])
+                    logger.info(
+                        "Running bounded SQLMesh recovery for %s missing interval(s): %s -> %s",
+                        gap_intervals,
+                        recovery_start,
+                        recovery_end,
+                    )
+
+                    context_kwargs = {"paths": self.config.sqlmesh.project_path}
+                    if self.merged_config is not None:
+                        context_kwargs["config"] = self.merged_config
+                        if self.runtime_gateway is not None:
+                            context_kwargs["gateway"] = self.runtime_gateway
+                    else:
+                        context_kwargs["gateway"] = self.config.sqlmesh.gateway
+
+                    run_ctx = Context(**context_kwargs)
+                    run_kwargs = {
+                        "environment": self.config.sqlmesh.environment,
+                        "start": recovery_start,
+                        "end": recovery_end,
+                    }
+                    if selected_models:
+                        run_kwargs["select_models"] = selected_models
+
+                    import inspect
+
+                    run_sig = inspect.signature(run_ctx.run)
+                    if "skip_audits" in run_sig.parameters and self.config.generation.skip_audits:
+                        run_kwargs["skip_audits"] = True
+
+                    result = run_ctx.run(**run_kwargs)
+                    return {
+                        "status": result.name if hasattr(result, "name") else str(result),
+                        "gap_intervals": gap_intervals,
+                        "recovery_start": gap_payload["recovery_start"],
+                        "recovery_end": gap_payload["recovery_end"],
+                    }
+
+                recovery_task = PythonOperator(
+                    task_id="sqlmesh_recovery_backfill",
+                    python_callable=replay_missing_intervals,
+                    dag=dag,
+                )
+                tasks["sqlmesh_recovery_backfill"] = recovery_task
+                integrity_task >> recovery_task
+                recovery_anchor_task = recovery_task
+
+        # Step 1: Create dummy tasks for source tables (if enabled)
+        if self.config.generation.include_source_tables:
+            all_source_tables = set()
+
+            # Collect all unique source tables across all models
+            for model_name in target_models:
+                source_tables = self.get_source_tables(model_name)
+                all_source_tables.update(source_tables)
+
+            # Create EmptyOperator for each source table
+            for source_table in all_source_tables:
+                # Create a clean task_id from table name using sanitize_task_id
+                # This removes quotes, dots, and other invalid characters
+                task_id = f"source__{sanitize_task_id(source_table)}"
+
+                source_task = EmptyOperator(
+                    task_id=task_id,
+                    dag=dag,
+                )
+
+                # Store with original table name as key
+                source_table_tasks[source_table] = source_task
+
+                # Link replan task if it exists
+                if recovery_anchor_task:
+                    recovery_anchor_task >> source_task
+                elif replan_task:
+                    replan_task >> source_task
+                elif health_check_task:
+                    health_check_task >> source_task
+
+                logger.debug(f"Created source table task: {task_id} for {source_table}")
+
+            if source_table_tasks:
+                logger.info(f"Created {len(source_table_tasks)} source table dummy tasks")
+
+        # Step 2: Create a task for each SQLMesh model
+        for model_name, model_info in target_models.items():
             task_id = model_info.get_task_id()
 
             # Create the execution function
@@ -551,11 +1188,23 @@ class SQLMeshDAGGenerator:
                 def execute_model(**context):
                     from sqlmesh import Context
 
-                    # Load fresh context
-                    run_ctx = Context(
-                        paths=self.config.sqlmesh.project_path,
-                        gateway=self.config.sqlmesh.gateway,
-                    )
+                    # Build context kwargs - use merged config if available
+                    context_kwargs = {
+                        "paths": self.config.sqlmesh.project_path,
+                    }
+
+                    # Use merged config and runtime gateway if they were created
+                    if self.merged_config is not None:
+                        context_kwargs["config"] = self.merged_config
+                        # Use the runtime gateway name (where connections are configured)
+                        if self.runtime_gateway is not None:
+                            context_kwargs["gateway"] = self.runtime_gateway
+                    else:
+                        # Fallback to original gateway if no merged config
+                        context_kwargs["gateway"] = self.config.sqlmesh.gateway
+
+                    # Load fresh context with runtime connections
+                    run_ctx = Context(**context_kwargs)
 
                     # Get time interval (Airflow 2.2+)
                     # data_interval_start/end provides correct time range for incremental models
@@ -564,12 +1213,87 @@ class SQLMeshDAGGenerator:
                     end = context.get('data_interval_end') or context.get('execution_date')
 
                     # Run the model with proper time range
-                    return run_ctx.run(
-                        environment=self.config.sqlmesh.environment,
-                        start=start,
-                        end=end,
-                        select_models=[m_fqn],
-                    )
+                    try:
+                        # Build run kwargs - only include skip_audits if enabled
+                        # (some SQLMesh versions may not support this parameter)
+                        run_kwargs = {
+                            "environment": self.config.sqlmesh.environment,
+                            "start": start,
+                            "end": end,
+                            "select_models": [m_fqn],
+                        }
+
+                        # Check if skip_audits is supported by inspecting the method signature
+                        import inspect
+                        run_sig = inspect.signature(run_ctx.run)
+                        if "skip_audits" in run_sig.parameters and self.config.generation.skip_audits:
+                            run_kwargs["skip_audits"] = True
+
+                        result = run_ctx.run(**run_kwargs)
+
+                        if not self.config.generation.return_value:
+                            return None
+
+                        if result is None:
+                            return {"status": "success", "model": m_fqn}
+
+                        # Convert CompletionStatus enum to string for XCom serialization
+                        # Airflow cannot serialize enum types, so we return a simple dict
+                        return {
+                            "status": result.name if hasattr(result, 'name') else str(result),
+                            "value": str(result.value) if hasattr(result, 'value') else None,
+                            "model": m_fqn,
+                        }
+                    except Exception as e:
+                        error_msg = str(e)
+
+                        # Check for "Environment not found" error
+                        if "Environment" in error_msg and "was not found" in error_msg:
+                            env_name = self.config.sqlmesh.environment
+                            raise RuntimeError(
+                                f"SQLMesh environment '{env_name}' was not found.\n\n"
+                                f"🔧 SOLUTION: For Airflow production DAGs, use environment='' (empty string):\n\n"
+                                f"   generator = SQLMeshDAGGenerator(\n"
+                                f"       sqlmesh_project_path='/path/to/project',\n"
+                                f"       gateway='prod',  # ✅ Use gateway to switch environments\n"
+                                f"       # environment defaults to '' - no virtual environment\n"
+                                f"   )\n\n"
+                                f"   OR in YAML config:\n"
+                                f"   sqlmesh:\n"
+                                f"     project_path: /path/to/project\n"
+                                f"     gateway: prod\n"
+                                f"     environment: ''  # Empty string = no virtual environment\n\n"
+                                f"📚 Why? SQLMesh environments are virtual schemas for testing changes,\n"
+                                f"   not for production runs. Use 'gateway' to switch between dev/staging/prod.\n\n"
+                                f"   See docs/SQLMESH_ENVIRONMENTS.md for complete explanation.\n\n"
+                                f"Original error: {e}"
+                            ) from e
+
+                        # Check for Redshift catalog/3-part naming error
+                        elif "does not exist" in error_msg and (
+                            "redshift" in error_msg.lower() or
+                            "3D000" in error_msg or  # Redshift error code for invalid catalog
+                            ("." in error_msg and error_msg.count('"') >= 6)  # 3-part naming pattern
+                        ):
+                            raise RuntimeError(
+                                f"SQLMesh catalog error (likely 3-part naming issue):\n"
+                                f"{error_msg}\n\n"
+                                f"🔧 SOLUTION: For Redshift (2-part naming), check your SQLMesh config.yaml:\n\n"
+                                f"   gateways:\n"
+                                f"     prod:\n"
+                                f"       connection:\n"
+                                f"         type: redshift\n"
+                                f"         database: your_database_name  # ✅ Ensure this is correct!\n"
+                                f"         ...\n\n"
+                                f"📚 Why? Redshift uses schema.table (2-part), not catalog.schema.table (3-part).\n"
+                                f"   SQLMesh automatically detects the default catalog from your connection.\n"
+                                f"   Make sure your Redshift connection database is correctly configured.\n\n"
+                                f"Original error: {e}"
+                            ) from e
+
+                        else:
+                            # Re-raise other errors as-is
+                            raise
                 return execute_model
 
             # Create PythonOperator
@@ -581,18 +1305,37 @@ class SQLMeshDAGGenerator:
 
             tasks[model_name] = task
 
-        # Set up dependencies
-        for model_name, model_info in self.models.items():
+        # Step 3: Set up dependencies between models
+        for model_name, model_info in target_models.items():
             if model_name not in tasks:
                 continue
 
             current_task = tasks[model_name]
 
+            # Connect to upstream SQLMesh models
             for dep_name in model_info.dependencies:
                 if dep_name in tasks:
                     tasks[dep_name] >> current_task
 
-        return tasks
+            # Step 4: Connect to upstream source tables
+            if self.config.generation.include_source_tables:
+                source_tables = self.get_source_tables(model_name)
+                for source_table in source_tables:
+                    if source_table in source_table_tasks:
+                        source_table_tasks[source_table] >> current_task
+                        logger.debug(f"Linked source table {source_table} -> {model_name}")
+
+            # Link replan task if no other dependencies (root nodes)
+            if recovery_anchor_task and not current_task.upstream_task_ids:
+                recovery_anchor_task >> current_task
+            elif replan_task and not current_task.upstream_task_ids:
+                replan_task >> current_task
+            elif health_check_task and not current_task.upstream_task_ids:
+                health_check_task >> current_task
+
+        # Return all tasks (both models and source tables)
+        all_tasks = {**tasks, **source_table_tasks}
+        return all_tasks
 
     def _get_output_path(self) -> Path:
         """Get the output file path for the generated DAG"""

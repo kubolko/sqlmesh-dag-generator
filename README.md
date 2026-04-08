@@ -12,6 +12,7 @@ Transform your SQLMesh models into production-ready Airflow DAGs with **full dat
 - ✅ **Full Lineage in Airflow**: Each SQLMesh model = One Airflow task with proper dependencies
 - 🌍 **Multi-Environment Support**: Use Airflow Variables + SQLMesh gateways for dev/staging/prod
 - ⚡ **Incremental Models**: Proper handling with `data_interval_start/end`
+- 🩺 **Integrity Guardrails**: Warn when sub-hourly incremental models run with `catchup=False`, with optional bounded recovery helpers
 - 🎯 **Enhanced Error Handling**: SQLMesh-specific error messages in Airflow logs
 - 🛠️ **Dual Mode**: Dynamic (auto-discovery, default) or Static (full control)
 - 🚫 **No Vendor Lock-in**: Open source, no cloud dependencies
@@ -70,6 +71,37 @@ cp my_pipeline.py /opt/airflow/dags/
 ```
 
 **That's it! 🎉** Your SQLMesh models are now orchestrated by Airflow. The DAG will auto-discover models at runtime - no regeneration needed when models change!
+
+## Recovery And Completeness
+
+SQLMesh DAG Generator forwards Airflow's `data_interval_start` and `data_interval_end` into `ctx.run(start=..., end=...)`.
+That means the package executes the interval Airflow gives it, but it does **not** invent missed Airflow runs on its own.
+
+If you run sub-hourly incremental models with `catchup=False`, outages can leave completeness gaps unless you replay the missed windows.
+
+The package now supports an explicit recovery policy:
+
+- `recovery_mode="disabled"` (default): no runtime recovery tasks are added.
+- `recovery_mode="warn"`: add an integrity guard task that detects missing intervals and logs them.
+- `recovery_mode="bounded_auto"`: add the same guard task plus a bounded recovery task that replays missing intervals when the gap is within `recovery_max_intervals`.
+
+Example:
+
+```python
+generator = SQLMeshDAGGenerator(
+  sqlmesh_project_path="/path/to/project",
+  dag_id="my_pipeline",
+  recovery_mode="bounded_auto",
+  recovery_max_intervals=6,
+)
+```
+
+When `recovery_mode` is enabled, the package adds stable helper tasks to the DAG instead of mutating the graph at runtime:
+
+- `sqlmesh_integrity_guard`
+- `sqlmesh_recovery_backfill` in `bounded_auto` mode
+
+This keeps recovery explicit and observable in Airflow while preserving the default "no surprise backfills" behavior.
 
 ## 💡 What You Get
 

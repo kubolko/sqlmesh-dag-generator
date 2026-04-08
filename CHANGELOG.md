@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-04-08
+
+### Fixed
+- Restored the package source in GitHub from the newer published artifact instead of the stale `0.4.0` repo snapshot.
+- Added explicit recovery configuration for missed Airflow intervals: `disabled`, `warn`, and `bounded_auto`.
+- Added `sqlmesh_integrity_guard` and `sqlmesh_recovery_backfill` helper tasks for sub-hourly incremental projects.
+- Corrected bounded recovery replay windows so replay starts at the previous successful interval boundary and does not skip the first missed bucket.
+
+### Added
+- Added `security.py` for credential scrubbing and connection safety checks.
+- Added `validation.py` for project structure, dependency, and resource validation.
+
+### Changed
+- Bumped package version metadata to `0.9.5`.
+- Extended configuration serialization to include advanced generation settings and nested recovery config.
+- Generated dynamic DAGs now emit recovery controls and integrity warnings for `catchup=False` sub-hourly deployments.
+
 ## [0.4.0] - 2025-12-09
 
 ### Enhanced
