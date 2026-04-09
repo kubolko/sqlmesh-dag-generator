@@ -1,7 +1,7 @@
 """
 Core DAG generator module
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Union, Any, List
@@ -1336,6 +1336,162 @@ class SQLMeshDAGGenerator:
         # Return all tasks (both models and source tables)
         all_tasks = {**tasks, **source_table_tasks}
         return all_tasks
+
+    def _build_runtime_context_kwargs(self) -> Dict[str, Any]:
+        """Build SQLMesh Context kwargs using merged runtime connection config when available."""
+        context_kwargs = {
+            "paths": self.config.sqlmesh.project_path,
+        }
+
+        if self.merged_config is not None:
+            context_kwargs["config"] = self.merged_config
+            if self.runtime_gateway is not None:
+                context_kwargs["gateway"] = self.runtime_gateway
+        else:
+            context_kwargs["gateway"] = self.config.sqlmesh.gateway
+
+        return context_kwargs
+
+    @staticmethod
+    def _parse_manual_backfill_datetime(value: Union[str, datetime], field_name: str) -> datetime:
+        """Parse a manual backfill boundary into a timezone-aware UTC datetime."""
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            raw_value = str(value).strip()
+            if not raw_value:
+                raise ValueError(f"Manual backfill requires a non-empty '{field_name}' value.")
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _normalize_manual_backfill_models(
+        raw_models: Optional[Union[str, List[str]]]
+    ) -> Optional[List[str]]:
+        """Normalize manual backfill model selection into a list of model names."""
+        if raw_models is None:
+            return None
+        if isinstance(raw_models, str):
+            return [raw_models]
+        if not isinstance(raw_models, list) or not all(isinstance(model, str) for model in raw_models):
+            raise ValueError("Manual backfill 'models' must be a string or a list of model names.")
+        if not raw_models:
+            raise ValueError("Manual backfill 'models' cannot be an empty list.")
+        return raw_models
+
+    def create_manual_backfill_task(
+        self,
+        dag,
+        task_id: str = "sqlmesh_manual_backfill",
+        default_start: Optional[Union[str, datetime]] = None,
+        default_end: Optional[Union[str, datetime]] = None,
+        default_models: Optional[Union[str, List[str]]] = None,
+        execution_timeout: Optional[timedelta] = None,
+    ):
+        """
+        Create a manual SQLMesh backfill task for ad hoc historical replay.
+
+        The returned task reads optional overrides from ``dag_run.conf``:
+
+        - ``start``: ISO-8601 start boundary
+        - ``end``: ISO-8601 end boundary (defaults to current UTC time when omitted)
+        - ``models``: single model name or list of model names to replay
+
+        Args:
+            dag: Airflow DAG object.
+            task_id: Task ID for the manual backfill operator.
+            default_start: Default start boundary when ``dag_run.conf.start`` is omitted.
+            default_end: Default end boundary when ``dag_run.conf.end`` is omitted.
+            default_models: Optional default model selection.
+            execution_timeout: Optional Airflow execution timeout for the task.
+
+        Returns:
+            PythonOperator configured for manual SQLMesh backfill.
+        """
+        from airflow.exceptions import AirflowException
+        from airflow.operators.python import PythonOperator
+
+        normalized_default_models = self._normalize_manual_backfill_models(default_models)
+
+        def run_manual_backfill(**context):
+            dag_run = context.get("dag_run")
+            conf = dag_run.conf if dag_run and dag_run.conf else {}
+
+            requested_start = conf.get("start", default_start)
+            requested_end = conf.get("end", default_end)
+            requested_models = conf.get("models", normalized_default_models)
+
+            if requested_start is None:
+                raise AirflowException(
+                    "Manual backfill requires a start boundary. Provide default_start or dag_run.conf['start']."
+                )
+
+            try:
+                backfill_start = self._parse_manual_backfill_datetime(requested_start, "start")
+                if requested_end is None:
+                    backfill_end = datetime.now(timezone.utc).replace(microsecond=0)
+                else:
+                    backfill_end = self._parse_manual_backfill_datetime(requested_end, "end")
+                selected_models = self._normalize_manual_backfill_models(requested_models)
+            except ValueError as exc:
+                raise AirflowException(str(exc)) from exc
+
+            if backfill_start >= backfill_end:
+                raise AirflowException(
+                    f"Manual backfill start must be earlier than end. Got {backfill_start} >= {backfill_end}."
+                )
+
+            logger.info(
+                "Starting manual SQLMesh backfill for %s -> %s (models=%s)",
+                backfill_start,
+                backfill_end,
+                selected_models or "ALL",
+            )
+
+            self.load_sqlmesh_context()
+            if selected_models is not None:
+                if not self.models:
+                    self.extract_models()
+                unknown_models = sorted(set(selected_models) - set(self.models))
+                if unknown_models:
+                    raise AirflowException(
+                        f"Unknown SQLMesh models requested for manual backfill: {unknown_models}"
+                    )
+
+            run_ctx = Context(**self._build_runtime_context_kwargs())
+
+            run_kwargs = {
+                "environment": self.config.sqlmesh.environment,
+                "start": backfill_start,
+                "end": backfill_end,
+            }
+            if selected_models is not None:
+                run_kwargs["select_models"] = selected_models
+
+            run_sig = inspect.signature(run_ctx.run)
+            if "skip_audits" in run_sig.parameters and self.config.generation.skip_audits:
+                run_kwargs["skip_audits"] = True
+
+            result = run_ctx.run(**run_kwargs)
+            status = result.name if hasattr(result, "name") else str(result)
+            logger.info("Manual SQLMesh backfill finished with status: %s", status)
+
+            return {
+                "status": status,
+                "start": backfill_start.isoformat(),
+                "end": backfill_end.isoformat(),
+                "models": selected_models or "ALL",
+            }
+
+        return PythonOperator(
+            task_id=task_id,
+            python_callable=run_manual_backfill,
+            execution_timeout=execution_timeout,
+            dag=dag,
+        )
 
     def _get_output_path(self) -> Path:
         """Get the output file path for the generated DAG"""

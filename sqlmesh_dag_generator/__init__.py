@@ -2,7 +2,7 @@
 SQLMesh DAG Generator - Open Source Airflow Integration for SQLMesh
 """
 
-__version__ = "0.9.5"
+__version__ = "0.9.6"
 
 
 from sqlmesh_dag_generator.generator import SQLMeshDAGGenerator

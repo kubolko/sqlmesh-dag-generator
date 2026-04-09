@@ -81,9 +81,9 @@ If you run sub-hourly incremental models with `catchup=False`, outages can leave
 
 The package now supports an explicit recovery policy:
 
-- `recovery_mode="disabled"` (default): no runtime recovery tasks are added.
+- `recovery_mode="disabled"`: no runtime recovery tasks are added.
 - `recovery_mode="warn"`: add an integrity guard task that detects missing intervals and logs them.
-- `recovery_mode="bounded_auto"`: add the same guard task plus a bounded recovery task that replays missing intervals when the gap is within `recovery_max_intervals`.
+- `recovery_mode="bounded_auto"` (default): add the same guard task plus a bounded recovery task that replays missing intervals when the gap is within `recovery_max_intervals`.
 
 Example:
 
@@ -102,6 +102,41 @@ When `recovery_mode` is enabled, the package adds stable helper tasks to the DAG
 - `sqlmesh_recovery_backfill` in `bounded_auto` mode
 
 This keeps recovery explicit and observable in Airflow while preserving the default "no surprise backfills" behavior.
+
+### Manual Backfill Task
+
+For larger historical gaps, the package also exposes a first-class manual backfill task helper.
+Use it in a separate unscheduled DAG and trigger it only when you need to replay a broader window:
+
+```python
+from datetime import datetime, timedelta
+from airflow import DAG
+from sqlmesh_dag_generator import SQLMeshDAGGenerator
+
+generator = SQLMeshDAGGenerator(
+  sqlmesh_project_path="/path/to/project",
+  dag_id="my_pipeline",
+  gateway="prod",
+)
+
+with DAG(
+  dag_id="my_pipeline_manual_backfill",
+  schedule=None,
+  start_date=datetime(2024, 1, 1),
+  catchup=False,
+) as dag:
+  generator.create_manual_backfill_task(
+    dag,
+    default_start="2024-01-01T00:00:00",
+    execution_timeout=timedelta(hours=12),
+  )
+```
+
+The task reads optional `dag_run.conf` overrides:
+
+- `start`: ISO-8601 start boundary
+- `end`: ISO-8601 end boundary. If omitted, the task backfills up to the current UTC time.
+- `models`: one model name or a list of model names. If omitted, the task backfills all models.
 
 ## 💡 What You Get
 

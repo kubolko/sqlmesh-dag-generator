@@ -10,6 +10,7 @@ from sqlmesh_dag_generator.config import (
     AirflowConfig,
     GenerationConfig,
     DAGGeneratorConfig,
+    RecoveryConfig,
 )
 
 
@@ -37,6 +38,15 @@ def test_airflow_config_creation():
     assert config.dag_id == "test_dag"
     assert config.schedule_interval == "0 0 * * *"
     assert "test" in config.tags
+
+
+def test_recovery_config_defaults_to_bounded_auto():
+    """Test default recovery mode enables bounded auto replay."""
+    config = RecoveryConfig()
+
+    assert config.mode == "bounded_auto"
+    assert config.max_intervals == 6
+    assert config.fail_on_excess_gap is False
 
 
 def test_generation_config_defaults():

@@ -383,6 +383,92 @@ class TestSQLMeshDAGGenerator:
         assert run_kwargs["select_models"] == ["dwh.raw_5m"]
         assert recovery_result["gap_intervals"] == 3
 
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_create_manual_backfill_task_uses_defaults_and_conf_overrides(self, mock_context):
+        """Test manual backfill task supports default windows and dag_run.conf overrides."""
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        run_result = MagicMock()
+        run_result.name = "SUCCESS"
+        run_ctx.run.return_value = run_result
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+        )
+        generator.load_sqlmesh_context = MagicMock(return_value=run_ctx)
+        generator.models = {
+            "dwh.raw_5m": SQLMeshModelInfo(
+                name="dwh.raw_5m",
+                dependencies=set(),
+                interval_unit="FIVE_MINUTE",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+            "dwh.report": SQLMeshModelInfo(
+                name="dwh.report",
+                dependencies={"dwh.raw_5m"},
+                interval_unit="HOUR",
+                kind="FULL",
+            ),
+        }
+
+        with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_manual_backfill_task(
+                dag,
+                default_start="2024-01-01T00:00:00",
+            )
+
+        dag_run = MagicMock()
+        dag_run.conf = {
+            "end": "2024-01-01T02:00:00",
+            "models": ["dwh.raw_5m"],
+        }
+        result = task.python_callable(dag_run=dag_run)
+
+        run_ctx.run.assert_called_once()
+        _, run_kwargs = run_ctx.run.call_args
+        assert run_kwargs["start"].isoformat() == "2024-01-01T00:00:00+00:00"
+        assert run_kwargs["end"].isoformat() == "2024-01-01T02:00:00+00:00"
+        assert run_kwargs["select_models"] == ["dwh.raw_5m"]
+        assert result["status"] == "SUCCESS"
+        assert result["models"] == ["dwh.raw_5m"]
+
+    def test_create_manual_backfill_task_rejects_unknown_models(self):
+        """Test manual backfill task validates requested model names."""
+        from airflow import DAG
+        from airflow.exceptions import AirflowException
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+        )
+        generator.load_sqlmesh_context = MagicMock()
+        generator.models = {
+            "dwh.raw_5m": SQLMeshModelInfo(
+                name="dwh.raw_5m",
+                dependencies=set(),
+                interval_unit="FIVE_MINUTE",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+        }
+
+        with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_manual_backfill_task(
+                dag,
+                default_start="2024-01-01T00:00:00",
+            )
+
+        dag_run = MagicMock()
+        dag_run.conf = {
+            "end": "2024-01-01T02:00:00",
+            "models": ["dwh.missing"],
+        }
+
+        with pytest.raises(AirflowException, match="Unknown SQLMesh models"):
+            task.python_callable(dag_run=dag_run)
+
 
 class TestDynamicFeatures:
     """Test dynamic DAG specific features"""

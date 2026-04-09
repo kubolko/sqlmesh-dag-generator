@@ -84,7 +84,7 @@ class SQLMeshConfig:
 @dataclass
 class RecoveryConfig:
     """Optional runtime recovery behavior for missed Airflow intervals."""
-    mode: str = "disabled"  # disabled, warn, bounded_auto
+    mode: str = "bounded_auto"  # disabled, warn, bounded_auto
     max_intervals: int = 6
     fail_on_excess_gap: bool = False
 

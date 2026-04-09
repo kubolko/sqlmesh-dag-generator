@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `SQLMeshDAGGenerator.create_manual_backfill_task(...)` so manual historical replay can be defined as a package-managed Airflow task instead of custom DAG-local logic.
+
+### Changed
+- Made `recovery_mode="bounded_auto"` the package default for sub-hourly incremental DAGs, so bounded outage replay is opt-out instead of opt-in.
+- Bumped package version metadata to `0.9.6`.
+
+### Fixed
+- Repaired the corrupted recovery test section in `tests/test_generator.py` and added coverage for package-managed manual backfill execution.
+
 ## [0.9.5] - 2026-04-08
 
 ### Fixed
