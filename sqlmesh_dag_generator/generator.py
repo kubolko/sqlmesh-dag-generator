@@ -182,7 +182,7 @@ class SQLMeshDAGGenerator:
                 model_pattern=kwargs.get("model_pattern"),
                 include_source_tables=kwargs.get("include_source_tables", True),  # Default: enabled
                 return_value=kwargs.get("return_value", True),
-                auto_replan_on_change=kwargs.get("auto_replan_on_change", False),
+                auto_replan_on_change=kwargs.get("auto_replan_on_change", True),
                 replan_timeout_hours=kwargs.get("replan_timeout_hours", 6),  # Default: 6 hours for backfills
                 skip_audits=kwargs.get("skip_audits", False),
                 enable_health_check=kwargs.get("enable_health_check", False),
