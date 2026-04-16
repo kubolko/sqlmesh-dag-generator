@@ -138,7 +138,7 @@ class GenerationConfig:
     include_source_tables: bool = True  # Include upstream source tables as dummy tasks
     return_value: bool = True  # Whether to return execution result (XCom)
     auto_replan_on_change: bool = True  # Automatically plan+apply before running models
-    replan_timeout_hours: int = 6  # Timeout for replan task (initial backfills can be long!)
+    replan_timeout_hours: Optional[int] = 6  # None disables the replan task timeout.
     skip_audits: bool = False  # Skip audit checks during execution
     enable_health_check: bool = False  # Add a pre-flight health check task
     # Tag-based filtering - only include models with any of these tags

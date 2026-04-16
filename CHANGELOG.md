@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-04-16
+
+### Changed
+- Kept the package default `replan_timeout_hours=6` while allowing DAG consumers to override the timeout explicitly, including disabling it by passing `None`.
+- Bumped package version metadata to `0.9.8`.
+
 ### Added
 - Added `SQLMeshDAGGenerator.create_manual_backfill_task(...)` so manual historical replay can be defined as a package-managed Airflow task instead of custom DAG-local logic.
 

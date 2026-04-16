@@ -183,7 +183,7 @@ class SQLMeshDAGGenerator:
                 include_source_tables=kwargs.get("include_source_tables", True),  # Default: enabled
                 return_value=kwargs.get("return_value", True),
                 auto_replan_on_change=kwargs.get("auto_replan_on_change", True),
-                replan_timeout_hours=kwargs.get("replan_timeout_hours", 6),  # Default: 6 hours for backfills
+                replan_timeout_hours=kwargs.get("replan_timeout_hours", 6),  # None disables the replan timeout.
                 skip_audits=kwargs.get("skip_audits", False),
                 enable_health_check=kwargs.get("enable_health_check", False),
                 include_tags=kwargs.get("include_tags"),
@@ -991,14 +991,25 @@ class SQLMeshDAGGenerator:
                 }
 
             from datetime import timedelta as td
+
+            replan_timeout_hours = self.config.generation.replan_timeout_hours
             replan_task = PythonOperator(
                 task_id="sqlmesh_plan_apply",
                 python_callable=run_replan,
                 dag=dag,
-                # Use custom timeout for replan task - initial backfills can take hours!
-                execution_timeout=td(hours=self.config.generation.replan_timeout_hours),
+                execution_timeout=(
+                    td(hours=replan_timeout_hours)
+                    if replan_timeout_hours is not None
+                    else None
+                ),
             )
-            logger.info(f"Created auto-replan task: sqlmesh_plan_apply (timeout: {self.config.generation.replan_timeout_hours}h)")
+            if replan_timeout_hours is None:
+                logger.info("Created auto-replan task: sqlmesh_plan_apply (timeout: disabled)")
+            else:
+                logger.info(
+                    "Created auto-replan task: sqlmesh_plan_apply (timeout: %sh)",
+                    replan_timeout_hours,
+                )
 
             # Link health check to replan if both exist
             if health_check_task:
