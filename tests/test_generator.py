@@ -204,6 +204,82 @@ class TestSQLMeshDAGGenerator:
                 assert hasattr(task, 'task_id')
                 assert hasattr(task, 'python_callable')
 
+    @patch("sqlmesh.Context")
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_execute_model_omits_window_for_coarser_than_tick_models(self, mock_mod_context, mock_sqlmesh_context):
+        """A model whose interval is coarser than the DAG tick must not be run
+        with the tick's narrow window.
+
+        Root cause regression: when a project mixes sub-hourly and hourly models,
+        the DAG schedule is the global minimum (5 min). execute_model passed the
+        tick's data_interval (e.g. a 5-minute window) as start/end to EVERY model,
+        including hourly ones. SQLMesh returns NOTHING_TO_DO for an hourly model
+        given a sub-hour window that spans no full hourly boundary, so the hourly
+        model's state froze while its task still reported success. The fix: for a
+        model whose interval is coarser than the scheduler tick, omit start/end so
+        SQLMesh selects the correct interval(s) from the model cron.
+        """
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        run_result = MagicMock()
+        run_result.name = "SUCCESS"
+        run_ctx.run.return_value = run_result
+        # execute_model does `from sqlmesh import Context` locally, so the
+        # sqlmesh.Context patch is the one that matters here.
+        mock_sqlmesh_context.return_value = run_ctx
+        mock_mod_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+        )
+        # Mixed project: 5-min model sets the DAG tick to 5 minutes; the hourly
+        # model is coarser than the tick.
+        generator.models = {
+            "dwh.raw_5m": SQLMeshModelInfo(
+                name="dwh.raw_5m",
+                dependencies=set(),
+                interval_unit="FIVE_MINUTE",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+            "dwh.f_hourly": SQLMeshModelInfo(
+                name="dwh.f_hourly",
+                dependencies=set(),
+                interval_unit="HOUR",
+                kind="INCREMENTAL_BY_TIME_RANGE",
+            ),
+        }
+
+        with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
+            tasks = generator.create_tasks_in_dag(dag)
+
+        # 5-minute tick window (what the scheduler hands every task).
+        tick_start = datetime(2024, 1, 6, 12, 25)
+        tick_end = datetime(2024, 1, 6, 12, 30)
+
+        # Hourly model (coarser than tick): must be run WITHOUT start/end.
+        run_ctx.run.reset_mock()
+        tasks["dwh.f_hourly"].python_callable(
+            data_interval_start=tick_start, data_interval_end=tick_end,
+        )
+        run_ctx.run.assert_called_once()
+        _, hourly_kwargs = run_ctx.run.call_args
+        assert hourly_kwargs.get("start") is None
+        assert hourly_kwargs.get("end") is None
+        assert hourly_kwargs["select_models"] == ["dwh.f_hourly"]
+
+        # 5-min model (matches tick): keeps the explicit window (unchanged).
+        run_ctx.run.reset_mock()
+        tasks["dwh.raw_5m"].python_callable(
+            data_interval_start=tick_start, data_interval_end=tick_end,
+        )
+        run_ctx.run.assert_called_once()
+        _, raw_kwargs = run_ctx.run.call_args
+        assert raw_kwargs["start"] == tick_start
+        assert raw_kwargs["end"] == tick_end
+        assert raw_kwargs["select_models"] == ["dwh.raw_5m"]
+
     def test_static_dag_generation(self, demo_sqlmesh_project):
         """Test static DAG generation (alternative mode)"""
         config = DAGGeneratorConfig.from_dict({

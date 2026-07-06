@@ -2,6 +2,7 @@
 Core DAG generator module
 """
 from datetime import datetime, timedelta, timezone
+import inspect
 import logging
 from pathlib import Path
 from typing import Dict, Optional, Union, Any, List
@@ -1195,7 +1196,7 @@ class SQLMeshDAGGenerator:
             task_id = model_info.get_task_id()
 
             # Create the execution function
-            def make_callable(m_name, m_fqn):
+            def make_callable(m_name, m_fqn, m_interval_minutes=None):
                 def execute_model(**context):
                     from sqlmesh import Context
 
@@ -1223,16 +1224,42 @@ class SQLMeshDAGGenerator:
                     start = context.get('data_interval_start') or context.get('execution_date')
                     end = context.get('data_interval_end') or context.get('execution_date')
 
+                    # When this model's interval is COARSER than the DAG tick,
+                    # the tick's data_interval window (e.g. 5 minutes on a mixed
+                    # sub-hourly + hourly project) spans no full model interval.
+                    # SQLMesh then returns NOTHING_TO_DO and the model's state
+                    # silently freezes while the task still reports success.
+                    # In that case omit start/end so SQLMesh selects the correct
+                    # interval(s) from the model's own cron instead.
+                    if (
+                        m_interval_minutes
+                        and expected_interval_minutes
+                        and m_interval_minutes > expected_interval_minutes
+                    ):
+                        logger.info(
+                            "Model %s interval (%s min) is coarser than the DAG tick "
+                            "(%s min); running without an explicit window so SQLMesh "
+                            "picks the due interval(s) from the model cron.",
+                            m_fqn, m_interval_minutes, expected_interval_minutes,
+                        )
+                        start = None
+                        end = None
+
                     # Run the model with proper time range
                     try:
                         # Build run kwargs - only include skip_audits if enabled
                         # (some SQLMesh versions may not support this parameter)
                         run_kwargs = {
                             "environment": self.config.sqlmesh.environment,
-                            "start": start,
-                            "end": end,
                             "select_models": [m_fqn],
                         }
+                        # Only pass an explicit window when we have one. For
+                        # coarser-than-tick models start/end were cleared above so
+                        # SQLMesh selects the due interval(s) from the model cron.
+                        if start is not None:
+                            run_kwargs["start"] = start
+                        if end is not None:
+                            run_kwargs["end"] = end
 
                         # Check if skip_audits is supported by inspecting the method signature
                         import inspect
@@ -1310,7 +1337,13 @@ class SQLMeshDAGGenerator:
             # Create PythonOperator
             task = PythonOperator(
                 task_id=task_id,
-                python_callable=make_callable(model_name, model_info.name),
+                python_callable=make_callable(
+                    model_name,
+                    model_info.name,
+                    get_interval_frequency_minutes(model_info.interval_unit)
+                    if model_info.interval_unit is not None
+                    else None,
+                ),
                 dag=dag,
             )
 

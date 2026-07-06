@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-06
+
+### Fixed
+- Fixed silent state-freeze of incremental models whose interval is coarser than the DAG tick. On a project mixing sub-hourly and hourly (or daily) incremental models, `auto_schedule` sets the DAG cadence to the global minimum interval (e.g. 5 minutes). `execute_model` then passed that narrow tick window (`data_interval_start`/`data_interval_end`) as `start`/`end` to *every* model. For a coarser model the window spans no full model interval, so SQLMesh returns `NOTHING_TO_DO` and the model never advances — while the Airflow task still reports success. `execute_model` now detects when a model's own interval is coarser than the scheduler tick and omits `start`/`end`, letting SQLMesh select the due interval(s) from the model's cron. Sub-hourly/matching models keep the explicit window unchanged.
+- Added a module-level `import inspect` so `run_manual_backfill` no longer raises `NameError: name 'inspect' is not defined` on Airflow builds where the local import path is not exercised.
+
 ## [0.9.8] - 2026-04-16
 
 ### Changed
