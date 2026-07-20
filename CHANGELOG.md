@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-07-20
+
+### Fixed
+- `config_to_dict()` now uses `exclude_defaults=True, by_alias=True` so runtime
+  config merge re-validates cleanly on SQLMesh 0.236+. Plain `model_dump()`
+  emitted `type_` (not `type`) for `default_scheduler`, which caused
+  `ConfigError: Missing scheduler type` during `sqlmesh_plan_apply` / context load.
+
 ## [0.9.11] - 2026-07-20
 
 ### Added
