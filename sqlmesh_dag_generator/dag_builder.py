@@ -571,10 +571,19 @@ try:
     # Extract model information
     discovered_models = {{}}
     for model_name, model in ctx.models.items():
+        # depends_on may be strings or objects with .name (sqlmesh version variance)
+        deps = []
+        for dep in (model.depends_on or []):
+            if isinstance(dep, str):
+                deps.append(dep)
+            elif hasattr(dep, "name"):
+                deps.append(str(dep.name))
+            else:
+                deps.append(str(dep))
         discovered_models[model_name] = {{
             "fqn": model.fqn,
             "name": str(model.name),
-            "dependencies": [str(dep.name) for dep in model.depends_on],
+            "dependencies": deps,
         }}
     
     logger.info(f"✓ Discovered {{{{len(discovered_models)}}}} SQLMesh models")

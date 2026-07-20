@@ -1,4 +1,5 @@
-sqlmesh>=0.20.0
-apache-airflow>=2.0.0
+# Tested with sqlmesh 0.228.x (prod image) through 0.236.x (latest at 0.9.11)
+sqlmesh>=0.228.0
+apache-airflow>=2.4.0
 pyyaml>=5.4.0
 

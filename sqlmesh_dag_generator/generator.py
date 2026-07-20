@@ -273,20 +273,25 @@ class SQLMeshDAGGenerator:
                 }
 
                 # Try to load existing config to preserve other settings
+                # (Config.load was removed in modern SQLMesh; use sqlmesh_compat)
                 try:
+                    from sqlmesh_dag_generator.sqlmesh_compat import (
+                        config_to_dict,
+                        load_sqlmesh_config,
+                    )
+
                     if self.config.sqlmesh.config_path:
-                        base_config = Config.load(self.config.sqlmesh.config_path, gateway=None)
+                        base_config = load_sqlmesh_config(self.config.sqlmesh.config_path)
                     else:
                         config_path = Path(self.config.sqlmesh.project_path) / "config.yaml"
                         if config_path.exists():
-                            base_config = Config.load(config_path, gateway=None)
+                            base_config = load_sqlmesh_config(config_path)
                         else:
                             base_config = None
 
                     if base_config:
-                        # Merge settings from base config (but NOT gateway connections - we'll override those)
-                        base_dict = base_config.dict()
-                        # Preserve non-gateway settings
+                        # Merge settings from base config (but NOT gateway connections)
+                        base_dict = config_to_dict(base_config)
                         for key in base_dict:
                             if key not in ["gateways", "default_gateway"]:
                                 config_dict[key] = base_dict[key]
@@ -479,12 +484,15 @@ class SQLMeshDAGGenerator:
         Returns:
             SQLMeshModelInfo object with extracted data
         """
-        # Extract dependencies
-        dependencies = set()
-        if hasattr(model, 'depends_on'):
-            dependencies = model.depends_on
-        elif hasattr(model, 'dependencies'):
-            dependencies = model.dependencies
+        # Extract dependencies (str names or objects with .name — varies by sqlmesh version)
+        from sqlmesh_dag_generator.sqlmesh_compat import normalize_depends_on
+
+        if hasattr(model, "depends_on"):
+            dependencies = normalize_depends_on(model.depends_on)
+        elif hasattr(model, "dependencies"):
+            dependencies = normalize_depends_on(model.dependencies)
+        else:
+            dependencies = set()
 
         # Extract scheduling information
         cron = getattr(model, 'cron', None)
@@ -534,14 +542,13 @@ class SQLMeshDAGGenerator:
         # that lists external tables they read from
         if hasattr(model, 'source_tables'):
             source_tables = list(model.source_tables)
-        elif hasattr(model, 'depends_on'):
+        elif hasattr(model, "depends_on"):
             # Filter out SQLMesh models from dependencies
             # Source tables are dependencies that are NOT in self.models
-            all_deps = model.depends_on if model.depends_on else set()
-            source_tables = [
-                dep for dep in all_deps
-                if dep not in self.models
-            ]
+            from sqlmesh_dag_generator.sqlmesh_compat import normalize_depends_on
+
+            all_deps = normalize_depends_on(model.depends_on)
+            source_tables = [dep for dep in all_deps if dep not in self.models]
 
         return source_tables
 
