@@ -798,8 +798,7 @@ class SQLMeshDAGGenerator:
         Returns:
             Dictionary of created tasks {model_name: task}
         """
-        from airflow.operators.python import PythonOperator
-        from airflow.operators.empty import EmptyOperator
+        from sqlmesh_dag_generator.airflow_compat import EmptyOperator, PythonOperator
 
         # Load models if not already loaded
         if not self.models:
@@ -1456,7 +1455,8 @@ class SQLMeshDAGGenerator:
             PythonOperator configured for manual SQLMesh backfill.
         """
         from airflow.exceptions import AirflowException
-        from airflow.operators.python import PythonOperator
+
+        from sqlmesh_dag_generator.airflow_compat import PythonOperator
 
         normalized_default_models = self._normalize_manual_backfill_models(default_models)
 

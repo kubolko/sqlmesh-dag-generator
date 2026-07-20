@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-07-20
+
+### Added
+- **Airflow 2 + 3 dual compatibility** via `sqlmesh_dag_generator.airflow_compat`:
+  - Operators: prefer `airflow.providers.standard.*`, fall back to classic AF2 paths
+  - `BaseHook` / `Variable`: prefer Airflow 3 Task SDK, fall back to AF2
+  - `dag_schedule_kwargs()` helper; generated DAGs emit `schedule=` (AF3-safe, AF2.4+)
+- Re-exports of compat symbols from package root for consumers
+
+### Changed
+- `generator.py` and `airflow_utils.py` import operators/hooks through `airflow_compat`
+- Static and dynamic `dag_builder` output uses `schedule=` and compat imports
+  (config YAML key `schedule_interval` unchanged for backward compatibility)
+
 ## [0.9.9] - 2026-07-06
 
 ### Fixed

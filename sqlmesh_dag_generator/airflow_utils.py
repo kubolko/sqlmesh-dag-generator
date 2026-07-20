@@ -73,7 +73,8 @@ class AirflowConnectionResolver(CredentialResolver):
         else:
             # It's a connection ID, fetch it
             try:
-                from airflow.hooks.base import BaseHook
+                from sqlmesh_dag_generator.airflow_compat import BaseHook
+
                 conn = BaseHook.get_connection(identifier)
             except Exception as e:
                 logger.error(f"Failed to get Airflow connection '{identifier}': {e}")

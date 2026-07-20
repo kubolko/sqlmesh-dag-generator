@@ -13,8 +13,11 @@ filterwarnings = [
     "ignore::DeprecationWarning:astor",
     "ignore::DeprecationWarning:dateparser",
     "ignore:.*json_encoders.*:DeprecationWarning",
-    # Ignore Airflow deprecation warnings (they're migrating their SDK)
+    # Airflow deprecations (compat layer still falls back to classic paths on AF2)
     "ignore:.*airflow.hooks.base.BaseHook.*",
+    "ignore:.*airflow.operators.python.PythonOperator.*",
+    "ignore:.*airflow.operators.empty.EmptyOperator.*",
+    "ignore:.*airflow.models.Variable.*",
 ]
 
 [tool.coverage.run]

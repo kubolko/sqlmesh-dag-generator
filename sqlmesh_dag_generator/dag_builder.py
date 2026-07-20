@@ -98,10 +98,12 @@ class AirflowDAGBuilder:
             "from airflow import DAG",
         ]
 
+        # AF2.4+ / AF3 dual-compat operators (prefer providers.standard on AF3)
+        compat_symbols = []
         if self.config.generation.operator_type == "python":
-            imports.append("from airflow.operators.python import PythonOperator")
+            compat_symbols.append("PythonOperator")
         elif self.config.generation.operator_type == "bash":
-            imports.append("from airflow.operators.bash import BashOperator")
+            compat_symbols.append("BashOperator")
         elif self.config.generation.operator_type == "kubernetes":
             imports.extend([
                 "from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator",
@@ -109,13 +111,16 @@ class AirflowDAGBuilder:
                 "from kubernetes.client.models import V1EnvVar",
             ])
 
-        # Add TriggerDagRunOperator if trigger_dag_id is configured
         if self.config.generation.trigger_dag_id:
-            imports.append("from airflow.operators.trigger_dagrun import TriggerDagRunOperator")
+            compat_symbols.append("TriggerDagRunOperator")
 
-        # Add EmptyOperator for source tables
         if self.config.generation.include_source_tables:
-            imports.append("from airflow.operators.empty import EmptyOperator")
+            compat_symbols.append("EmptyOperator")
+
+        if compat_symbols:
+            imports.append("from sqlmesh_dag_generator.airflow_compat import (")
+            imports.append("    " + ", ".join(compat_symbols) + ",")
+            imports.append(")")
 
         imports.extend([
             "",
@@ -172,12 +177,14 @@ class AirflowDAGBuilder:
         if self.config.airflow.sla_miss_callback:
             optional_args += f"\n    sla_miss_callback={self.config.airflow.sla_miss_callback},"
 
+        # schedule= works on Airflow 2.4+ and is required on Airflow 3
+        # (schedule_interval= was removed in AF3)
         return f"""# DAG Definition
 dag = DAG(
     dag_id="{self.config.airflow.dag_id}",
     default_args={default_args},
     description={description},
-    schedule_interval={schedule},
+    schedule={schedule},
     start_date={start_date_str},
     catchup={self.config.airflow.catchup},
     max_active_runs={self.config.airflow.max_active_runs},
@@ -438,9 +445,12 @@ DO NOT EDIT MANUALLY - changes will be overwritten.
             "import logging",
             "",
             "from airflow import DAG",
-            "from airflow.operators.python import PythonOperator",
-            "from airflow.models import Variable",
             "from airflow.exceptions import AirflowException",
+            # AF2.4+ / AF3 dual-compat (providers.standard + Task SDK when available)
+            "from sqlmesh_dag_generator.airflow_compat import (",
+            "    PythonOperator,",
+            "    Variable,",
+            ")",
             "",
             "from sqlmesh import Context",
             "from sqlmesh.utils.errors import SQLMeshError",
@@ -601,11 +611,12 @@ except Exception as e:
         else:
             start_date_str = "datetime.now() - timedelta(days=1)"  # Default to yesterday
 
+        # schedule= works on Airflow 2.4+ and is required on Airflow 3
         return f'''# Create DAG{schedule_comment}
 with DAG(
     dag_id="{self.config.airflow.dag_id}",
     start_date={start_date_str},
-    schedule_interval={schedule},
+    schedule={schedule},
     catchup={self.config.airflow.catchup},
     max_active_runs={self.config.airflow.max_active_runs},
     default_args={default_args},
