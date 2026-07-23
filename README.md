@@ -72,6 +72,29 @@ cp my_pipeline.py /opt/airflow/dags/
 
 **That's it! 🎉** Your SQLMesh models are now orchestrated by Airflow. The DAG will auto-discover models at runtime - no regeneration needed when models change!
 
+## Deploy Path vs Interval Run Path
+
+For large warehouses or alert-critical pipelines, **do not** run plan/apply on the same DAG as interval models.
+
+| DAG role | Setting | Task API |
+|----------|---------|----------|
+| **Hot path** (intervals only) | `auto_replan_on_change=False` | `create_tasks_in_dag(dag)` |
+| **Deploy path** (model changes) | manual/trigger schedule | `create_plan_apply_task(dag)` |
+
+```python
+# Interval/run DAG — never blocks on multi-hour plan/backfill
+generator = SQLMeshDAGGenerator(..., auto_replan_on_change=False)
+with DAG("dwh_sqlmesh_pipeline", ...) as dag:
+    generator.create_tasks_in_dag(dag)
+
+# Deploy DAG — plan+apply only
+deploy = SQLMeshDAGGenerator(..., auto_replan_on_change=False)
+with DAG("dwh_sqlmesh_deploy", schedule=None, ...) as dag:
+    deploy.create_plan_apply_task(dag)
+```
+
+`create_plan_apply_task` supports `dag_run.conf` overrides: `plan_only`, `skip_backfill`.
+
 ## Recovery And Completeness
 
 SQLMesh DAG Generator forwards Airflow's `data_interval_start` and `data_interval_end` into `ctx.run(start=..., end=...)`.

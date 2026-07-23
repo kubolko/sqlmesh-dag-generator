@@ -871,154 +871,11 @@ class SQLMeshDAGGenerator:
             logger.info("Created health check task: sqlmesh_health_check")
 
         # Step 0: Create Replan Task (if enabled)
+        # Prefer a dedicated deploy DAG (create_plan_apply_task) for large warehouses
+        # so interval runs never block on plan/apply.
         replan_task = None
         if self.config.generation.auto_replan_on_change:
-            def run_replan(**context):
-                """
-                Optimized replan function that:
-                1. Detects "no changes" scenarios and skips apply
-                2. Supports skip_backfill option to skip when backfill is needed
-                3. Supports plan_only mode for review without apply
-                4. Provides detailed logging for each phase
-                """
-                from sqlmesh import Context
-                import time
-
-                start_time = time.time()
-                log_details = self.config.generation.log_plan_details
-
-                # Build context kwargs - use merged config if available
-                context_kwargs = {
-                    "paths": self.config.sqlmesh.project_path,
-                }
-
-                # Use merged config and runtime gateway if they were created
-                if self.merged_config is not None:
-                    context_kwargs["config"] = self.merged_config
-                    if self.runtime_gateway is not None:
-                        context_kwargs["gateway"] = self.runtime_gateway
-                else:
-                    context_kwargs["gateway"] = self.config.sqlmesh.gateway
-
-                # Phase 1: Load SQLMesh context
-                logger.info("Phase 1/3: Loading SQLMesh context...")
-                ctx_start = time.time()
-                run_ctx = Context(**context_kwargs)
-                ctx_duration = time.time() - ctx_start
-                logger.info(f"Context loaded in {ctx_duration:.2f}s")
-
-                # Phase 2: Compute plan WITHOUT applying first
-                logger.info("Phase 2/3: Computing plan (checking for changes)...")
-                plan_start = time.time()
-                plan = run_ctx.plan(
-                    environment=self.config.sqlmesh.environment,
-                    auto_apply=False,  # Don't apply yet - just compute the plan
-                    no_prompts=True,
-                )
-                plan_duration = time.time() - plan_start
-                logger.info(f"Plan computed in {plan_duration:.2f}s")
-
-                # Log plan details if enabled
-                if log_details:
-                    logger.info(f"  - has_changes: {plan.has_changes}")
-                    logger.info(f"  - requires_backfill: {plan.requires_backfill}")
-                    if plan.new_snapshots:
-                        logger.info(f"  - new_snapshots: {len(plan.new_snapshots)}")
-                    if plan.modified_snapshots:
-                        logger.info(f"  - modified_snapshots: {len(plan.modified_snapshots)}")
-                    if plan.missing_intervals:
-                        logger.info(f"  - missing_intervals: {len(plan.missing_intervals)} model(s)")
-
-                # Check if there are actual changes
-                if not plan.has_changes and not plan.requires_backfill:
-                    total_duration = time.time() - start_time
-                    logger.info(f"✅ No model changes detected, skipping apply")
-                    logger.info(f"Total time: {total_duration:.2f}s (saved from full backfill)")
-                    return {
-                        "status": "skipped",
-                        "reason": "no_changes",
-                        "duration_seconds": total_duration,
-                        "context_load_seconds": ctx_duration,
-                        "plan_compute_seconds": plan_duration,
-                    }
-
-                # Plan-only mode: just report what would be done
-                if self.config.generation.plan_only:
-                    total_duration = time.time() - start_time
-                    logger.info(f"📋 Plan-only mode: changes detected but not applying")
-                    if plan.has_changes:
-                        logger.info(f"  - Would apply model changes")
-                    if plan.requires_backfill:
-                        logger.info(f"  - Would run backfill")
-                    logger.info(f"Total time: {total_duration:.2f}s")
-                    return {
-                        "status": "plan_only",
-                        "reason": "plan_only_mode",
-                        "has_changes": plan.has_changes,
-                        "requires_backfill": plan.requires_backfill,
-                        "duration_seconds": total_duration,
-                    }
-
-                # Skip backfill option: skip apply if backfill is required
-                if self.config.generation.skip_backfill and plan.requires_backfill:
-                    total_duration = time.time() - start_time
-                    logger.warning(f"⏭️  Backfill required but skip_backfill=True, skipping apply")
-                    logger.info(f"  - Run 'sqlmesh plan --auto-apply' manually or via CI/CD to apply changes")
-                    logger.info(f"Total time: {total_duration:.2f}s")
-                    return {
-                        "status": "skipped",
-                        "reason": "backfill_skipped",
-                        "has_changes": plan.has_changes,
-                        "requires_backfill": plan.requires_backfill,
-                        "duration_seconds": total_duration,
-                    }
-
-                # Phase 3: Apply the plan
-                logger.info("Phase 3/3: Applying plan...")
-                if plan.has_changes:
-                    logger.info(f"  - Applying model changes...")
-                if plan.requires_backfill:
-                    logger.info(f"  - Running backfill (this may take a while)...")
-
-                apply_start = time.time()
-                run_ctx.apply(plan)
-                apply_duration = time.time() - apply_start
-                logger.info(f"Plan applied in {apply_duration:.2f}s")
-
-                total_duration = time.time() - start_time
-                logger.info(f"✅ Total time: {total_duration:.2f}s")
-                return {
-                    "status": "applied",
-                    "has_changes": plan.has_changes,
-                    "requires_backfill": plan.requires_backfill,
-                    "duration_seconds": total_duration,
-                    "context_load_seconds": ctx_duration,
-                    "plan_compute_seconds": plan_duration,
-                    "apply_seconds": apply_duration,
-                }
-
-            from datetime import timedelta as td
-
-            replan_timeout_hours = self.config.generation.replan_timeout_hours
-            replan_task = PythonOperator(
-                task_id="sqlmesh_plan_apply",
-                python_callable=run_replan,
-                dag=dag,
-                execution_timeout=(
-                    td(hours=replan_timeout_hours)
-                    if replan_timeout_hours is not None
-                    else None
-                ),
-            )
-            if replan_timeout_hours is None:
-                logger.info("Created auto-replan task: sqlmesh_plan_apply (timeout: disabled)")
-            else:
-                logger.info(
-                    "Created auto-replan task: sqlmesh_plan_apply (timeout: %sh)",
-                    replan_timeout_hours,
-                )
-
-            # Link health check to replan if both exist
+            replan_task = self.create_plan_apply_task(dag=dag)
             if health_check_task:
                 health_check_task >> replan_task
 
@@ -1401,6 +1258,200 @@ class SQLMeshDAGGenerator:
             context_kwargs["gateway"] = self.config.sqlmesh.gateway
 
         return context_kwargs
+
+    @staticmethod
+    def _coerce_bool_conf(value: Any, default: bool) -> bool:
+        """Coerce dag_run.conf / config values to bool."""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def create_plan_apply_task(
+        self,
+        dag,
+        task_id: str = "sqlmesh_plan_apply",
+        execution_timeout: Optional[timedelta] = None,
+        plan_only: Optional[bool] = None,
+        skip_backfill: Optional[bool] = None,
+    ):
+        """
+        Create a standalone SQLMesh plan+apply task (deploy path).
+
+        Use this on a dedicated deploy DAG so interval/run DAGs never block on
+        model changes. Hot-path pipelines should set ``auto_replan_on_change=False``
+        and call only ``create_tasks_in_dag``.
+
+        Optional ``dag_run.conf`` overrides:
+
+        - ``plan_only``: compute plan without applying
+        - ``skip_backfill``: skip apply when the plan requires backfill
+
+        Args:
+            dag: Airflow DAG object.
+            task_id: Task ID for the plan/apply operator.
+            execution_timeout: Optional timeout. Defaults to
+                ``generation.replan_timeout_hours`` when set.
+            plan_only: Override ``generation.plan_only`` for this task.
+            skip_backfill: Override ``generation.skip_backfill`` for this task.
+
+        Returns:
+            PythonOperator configured for SQLMesh plan+apply.
+        """
+        import time
+
+        from sqlmesh_dag_generator.airflow_compat import PythonOperator
+
+        default_plan_only = (
+            self.config.generation.plan_only if plan_only is None else plan_only
+        )
+        default_skip_backfill = (
+            self.config.generation.skip_backfill if skip_backfill is None else skip_backfill
+        )
+        log_details = self.config.generation.log_plan_details
+
+        def run_plan_apply(**context):
+            """
+            Optimized plan/apply:
+            1. Skip apply when nothing changed
+            2. Honour plan_only / skip_backfill (config or dag_run.conf)
+            3. Detailed phase logging
+            """
+            dag_run = context.get("dag_run")
+            conf = dag_run.conf if dag_run and dag_run.conf else {}
+
+            effective_plan_only = self._coerce_bool_conf(
+                conf.get("plan_only"), default_plan_only
+            )
+            effective_skip_backfill = self._coerce_bool_conf(
+                conf.get("skip_backfill"), default_skip_backfill
+            )
+
+            start_time = time.time()
+
+            # Ensure runtime connection merge is available for this worker.
+            if self.merged_config is None:
+                self.load_sqlmesh_context()
+
+            logger.info("Phase 1/3: Loading SQLMesh context...")
+            ctx_start = time.time()
+            run_ctx = Context(**self._build_runtime_context_kwargs())
+            ctx_duration = time.time() - ctx_start
+            logger.info("Context loaded in %.2fs", ctx_duration)
+
+            logger.info("Phase 2/3: Computing plan (checking for changes)...")
+            plan_start = time.time()
+            plan = run_ctx.plan(
+                environment=self.config.sqlmesh.environment,
+                auto_apply=False,
+                no_prompts=True,
+            )
+            plan_duration = time.time() - plan_start
+            logger.info("Plan computed in %.2fs", plan_duration)
+
+            if log_details:
+                logger.info("  - has_changes: %s", plan.has_changes)
+                logger.info("  - requires_backfill: %s", plan.requires_backfill)
+                if plan.new_snapshots:
+                    logger.info("  - new_snapshots: %s", len(plan.new_snapshots))
+                if plan.modified_snapshots:
+                    logger.info("  - modified_snapshots: %s", len(plan.modified_snapshots))
+                if plan.missing_intervals:
+                    logger.info(
+                        "  - missing_intervals: %s model(s)",
+                        len(plan.missing_intervals),
+                    )
+
+            if not plan.has_changes and not plan.requires_backfill:
+                total_duration = time.time() - start_time
+                logger.info("No model changes detected, skipping apply")
+                logger.info("Total time: %.2fs", total_duration)
+                return {
+                    "status": "skipped",
+                    "reason": "no_changes",
+                    "duration_seconds": total_duration,
+                    "context_load_seconds": ctx_duration,
+                    "plan_compute_seconds": plan_duration,
+                }
+
+            if effective_plan_only:
+                total_duration = time.time() - start_time
+                logger.info("Plan-only mode: changes detected but not applying")
+                if plan.has_changes:
+                    logger.info("  - Would apply model changes")
+                if plan.requires_backfill:
+                    logger.info("  - Would run backfill")
+                logger.info("Total time: %.2fs", total_duration)
+                return {
+                    "status": "plan_only",
+                    "reason": "plan_only_mode",
+                    "has_changes": plan.has_changes,
+                    "requires_backfill": plan.requires_backfill,
+                    "duration_seconds": total_duration,
+                }
+
+            if effective_skip_backfill and plan.requires_backfill:
+                total_duration = time.time() - start_time
+                logger.warning(
+                    "Backfill required but skip_backfill=True, skipping apply"
+                )
+                logger.info(
+                    "Run plan+apply with skip_backfill=false (or CI deploy) to apply"
+                )
+                logger.info("Total time: %.2fs", total_duration)
+                return {
+                    "status": "skipped",
+                    "reason": "backfill_skipped",
+                    "has_changes": plan.has_changes,
+                    "requires_backfill": plan.requires_backfill,
+                    "duration_seconds": total_duration,
+                }
+
+            logger.info("Phase 3/3: Applying plan...")
+            if plan.has_changes:
+                logger.info("  - Applying model changes...")
+            if plan.requires_backfill:
+                logger.info("  - Running backfill (this may take a while)...")
+
+            apply_start = time.time()
+            run_ctx.apply(plan)
+            apply_duration = time.time() - apply_start
+            logger.info("Plan applied in %.2fs", apply_duration)
+
+            total_duration = time.time() - start_time
+            logger.info("Total time: %.2fs", total_duration)
+            return {
+                "status": "applied",
+                "has_changes": plan.has_changes,
+                "requires_backfill": plan.requires_backfill,
+                "duration_seconds": total_duration,
+                "context_load_seconds": ctx_duration,
+                "plan_compute_seconds": plan_duration,
+                "apply_seconds": apply_duration,
+            }
+
+        if execution_timeout is None:
+            replan_timeout_hours = self.config.generation.replan_timeout_hours
+            if replan_timeout_hours is not None:
+                execution_timeout = timedelta(hours=replan_timeout_hours)
+
+        task = PythonOperator(
+            task_id=task_id,
+            python_callable=run_plan_apply,
+            dag=dag,
+            execution_timeout=execution_timeout,
+        )
+
+        if execution_timeout is None:
+            logger.info("Created plan/apply task: %s (timeout: disabled)", task_id)
+        else:
+            logger.info(
+                "Created plan/apply task: %s (timeout: %s)",
+                task_id,
+                execution_timeout,
+            )
+        return task
 
     @staticmethod
     def _parse_manual_backfill_datetime(value: Union[str, datetime], field_name: str) -> datetime:
