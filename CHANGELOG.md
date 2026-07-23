@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-07-23
+
+### Added
+- `SQLMeshDAGGenerator.create_plan_apply_task(...)` for a standalone deploy-path
+  plan+apply Airflow task (no model run graph). Supports `dag_run.conf` overrides:
+  `plan_only`, `skip_backfill`.
+
+### Changed
+- Internal replan wiring in `create_tasks_in_dag` now reuses `create_plan_apply_task`.
+- Documented split: interval/run DAGs should set `auto_replan_on_change=False`;
+  plan/apply belongs on a separate deploy DAG for large / alert-critical warehouses.
+
 ## [0.9.12] - 2026-07-20
 
 ### Fixed

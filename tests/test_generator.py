@@ -545,6 +545,104 @@ class TestSQLMeshDAGGenerator:
         with pytest.raises(AirflowException, match="Unknown SQLMesh models"):
             task.python_callable(dag_run=dag_run)
 
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_create_plan_apply_task_skips_when_no_changes(self, mock_context):
+        """Standalone plan/apply task skips apply when the plan is empty."""
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        plan = MagicMock()
+        plan.has_changes = False
+        plan.requires_backfill = False
+        plan.new_snapshots = []
+        plan.modified_snapshots = {}
+        plan.missing_intervals = []
+        run_ctx.plan.return_value = plan
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+        generator.runtime_gateway = "prod"
+
+        with DAG("test_deploy", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        run_ctx.plan.assert_called_once()
+        run_ctx.apply.assert_not_called()
+        assert result["status"] == "skipped"
+        assert result["reason"] == "no_changes"
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_create_plan_apply_task_conf_plan_only(self, mock_context):
+        """dag_run.conf plan_only prevents apply when changes exist."""
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        plan = MagicMock()
+        plan.has_changes = True
+        plan.requires_backfill = False
+        plan.new_snapshots = [1]
+        plan.modified_snapshots = {}
+        plan.missing_intervals = []
+        run_ctx.plan.return_value = plan
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+        generator.runtime_gateway = "prod"
+
+        with DAG("test_deploy", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        dag_run = MagicMock()
+        dag_run.conf = {"plan_only": True}
+        result = task.python_callable(dag_run=dag_run)
+
+        run_ctx.apply.assert_not_called()
+        assert result["status"] == "plan_only"
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_create_plan_apply_task_applies_changes(self, mock_context):
+        """Plan/apply task applies when changes exist and plan_only is false."""
+        from airflow import DAG
+
+        run_ctx = MagicMock()
+        plan = MagicMock()
+        plan.has_changes = True
+        plan.requires_backfill = True
+        plan.new_snapshots = [1]
+        plan.modified_snapshots = {}
+        plan.missing_intervals = [1]
+        run_ctx.plan.return_value = plan
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+        generator.runtime_gateway = "prod"
+
+        with DAG("test_deploy", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        run_ctx.apply.assert_called_once_with(plan)
+        assert result["status"] == "applied"
+        assert result["requires_backfill"] is True
+
 
 class TestDynamicFeatures:
     """Test dynamic DAG specific features"""
