@@ -193,6 +193,7 @@ class SQLMeshDAGGenerator:
                 pool_slots=kwargs.get("pool_slots", 1),
                 trigger_dag_id=kwargs.get("trigger_dag_id"),
                 trigger_dag_conf=kwargs.get("trigger_dag_conf"),
+                model_triggers=kwargs.get("model_triggers") or {},
                 # Plan optimization options
                 skip_backfill=kwargs.get("skip_backfill", False),
                 plan_only=kwargs.get("plan_only", False),
@@ -805,7 +806,16 @@ class SQLMeshDAGGenerator:
         Returns:
             Dictionary of created tasks {model_name: task}
         """
-        from sqlmesh_dag_generator.airflow_compat import EmptyOperator, PythonOperator
+        from sqlmesh_dag_generator.airflow_compat import (
+            EmptyOperator,
+            PythonOperator,
+            TriggerDagRunOperator,
+        )
+        from sqlmesh_dag_generator.triggers import (
+            default_trigger_conf,
+            resolve_model_trigger,
+            trigger_task_id,
+        )
 
         # Load models if not already loaded
         if not self.models:
@@ -1239,6 +1249,89 @@ class SQLMeshDAGGenerator:
                 replan_task >> current_task
             elif health_check_task and not current_task.upstream_task_ids:
                 health_check_task >> current_task
+
+        # Step 5: Per-model downstream DAG triggers (tags and/or model_triggers map)
+        # Fires only after *that* model succeeds — clean SoC for unload / notify DAGs.
+        if TriggerDagRunOperator is not None:
+            for model_name, model_info in target_models.items():
+                if model_name not in tasks:
+                    continue
+                trigger_cfg = resolve_model_trigger(
+                    model_name,
+                    tags=model_info.tags,
+                    model_triggers=self.config.generation.model_triggers,
+                )
+                if not trigger_cfg:
+                    continue
+                conf = default_trigger_conf(model_name, trigger_cfg.conf)
+                tid = trigger_task_id(trigger_cfg.dag_id, model_info.get_task_id())
+                op_kwargs = {
+                    "task_id": tid,
+                    "trigger_dag_id": trigger_cfg.dag_id,
+                    "conf": conf,
+                    "reset_dag_run": trigger_cfg.reset_dag_run,
+                    "wait_for_completion": trigger_cfg.wait_for_completion,
+                    "dag": dag,
+                }
+                if (
+                    trigger_cfg.wait_for_completion
+                    and trigger_cfg.poke_interval is not None
+                ):
+                    op_kwargs["poke_interval"] = trigger_cfg.poke_interval
+                try:
+                    trigger_op = TriggerDagRunOperator(**op_kwargs)
+                except TypeError:
+                    # Older Airflow may not accept all kwargs
+                    op_kwargs.pop("poke_interval", None)
+                    trigger_op = TriggerDagRunOperator(**op_kwargs)
+                tasks[model_name] >> trigger_op
+                tasks[tid] = trigger_op
+                logger.info(
+                    "Per-model trigger: %s -> DAG %s (task %s)",
+                    model_name,
+                    trigger_cfg.dag_id,
+                    tid,
+                )
+
+        # Step 6: Optional pipeline-level trigger after all leaf *model* tasks
+        if (
+            TriggerDagRunOperator is not None
+            and self.config.generation.trigger_dag_id
+        ):
+            leaf_names = []
+            if self.dag_structure:
+                leaf_names = [
+                    n
+                    for n in self.dag_structure.get_leaf_models()
+                    if n in tasks
+                ]
+            else:
+                deps = {
+                    d
+                    for info in target_models.values()
+                    for d in info.dependencies
+                }
+                leaf_names = [n for n in target_models if n not in deps and n in tasks]
+            if leaf_names:
+                conf = dict(self.config.generation.trigger_dag_conf or {})
+                conf.setdefault("source", "sqlmesh")
+                conf.setdefault("pipeline", self.config.airflow.dag_id)
+                pipeline_trigger = TriggerDagRunOperator(
+                    task_id=f"trigger_{self.config.generation.trigger_dag_id}",
+                    trigger_dag_id=self.config.generation.trigger_dag_id,
+                    conf=conf,
+                    dag=dag,
+                )
+                for name in leaf_names:
+                    tasks[name] >> pipeline_trigger
+                tasks[f"trigger_{self.config.generation.trigger_dag_id}"] = (
+                    pipeline_trigger
+                )
+                logger.info(
+                    "Pipeline-level trigger after leaves %s -> %s",
+                    leaf_names,
+                    self.config.generation.trigger_dag_id,
+                )
 
         # Return all tasks (both models and source tables)
         all_tasks = {**tasks, **source_table_tasks}

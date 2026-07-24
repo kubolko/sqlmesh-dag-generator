@@ -2,9 +2,14 @@
 Configuration module for SQLMesh DAG Generator
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
 import yaml
+
+from sqlmesh_dag_generator.triggers import (
+    ModelTriggerConfig,
+    normalize_model_triggers,
+)
 
 
 @dataclass
@@ -147,13 +152,23 @@ class GenerationConfig:
     # Resource management
     pool: Optional[str] = None  # Airflow pool for all tasks
     pool_slots: int = 1  # Number of pool slots per task
-    # Trigger downstream DAG after completion
+    # Trigger downstream DAG after completion of *all leaf* models (pipeline-level)
     trigger_dag_id: Optional[str] = None  # DAG to trigger on success
     trigger_dag_conf: Optional[Dict[str, Any]] = None  # Conf to pass to triggered DAG
+    # Per-model triggers (model FQN -> dag id / ModelTriggerConfig / dict).
+    # Also discoverable via SQLMesh tags: trigger_dag:<id>, trigger_conf:k=v
+    # Explicit map wins over tags. See sqlmesh_dag_generator.triggers.
+    model_triggers: Dict[str, Union[str, Dict[str, Any], ModelTriggerConfig]] = field(
+        default_factory=dict
+    )
     # Plan optimization options (for auto_replan_on_change)
     skip_backfill: bool = False  # Skip apply if backfill is required (use with CI/CD deploys)
     plan_only: bool = False  # Generate plan without applying (for review/dry-run)
     log_plan_details: bool = True  # Log detailed plan information (snapshots, intervals)
+
+    def __post_init__(self) -> None:
+        # Normalize model_triggers so consumers always see ModelTriggerConfig
+        self.model_triggers = normalize_model_triggers(self.model_triggers)  # type: ignore[assignment]
 
 
 @dataclass
@@ -176,7 +191,7 @@ class DAGGeneratorConfig:
         return cls(
             sqlmesh=SQLMeshConfig(**config_data.get("sqlmesh", {})),
             airflow=cls._build_airflow_config(config_data.get("airflow", {})),
-            generation=GenerationConfig(**config_data.get("generation", {})),
+            generation=cls._build_generation_config(config_data.get("generation", {})),
         )
 
     @classmethod
@@ -185,7 +200,7 @@ class DAGGeneratorConfig:
         return cls(
             sqlmesh=SQLMeshConfig(**config_dict.get("sqlmesh", {})),
             airflow=cls._build_airflow_config(config_dict.get("airflow", {})),
-            generation=GenerationConfig(**config_dict.get("generation", {})),
+            generation=cls._build_generation_config(config_dict.get("generation", {})),
         )
 
     @staticmethod
@@ -195,6 +210,13 @@ class DAGGeneratorConfig:
         recovery_dict = airflow_dict.pop("recovery", None) or {}
         airflow_dict["recovery"] = RecoveryConfig(**recovery_dict)
         return AirflowConfig(**airflow_dict)
+
+    @staticmethod
+    def _build_generation_config(config_dict: Dict[str, Any]) -> GenerationConfig:
+        """Build GenerationConfig (normalizes model_triggers)."""
+        gen = dict(config_dict or {})
+        # Leave model_triggers as-is; GenerationConfig.__post_init__ normalizes
+        return GenerationConfig(**gen)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary"""
@@ -255,6 +277,22 @@ class DAGGeneratorConfig:
                 "pool_slots": self.generation.pool_slots,
                 "trigger_dag_id": self.generation.trigger_dag_id,
                 "trigger_dag_conf": self.generation.trigger_dag_conf,
+                "model_triggers": {
+                    name: {
+                        "dag_id": getattr(cfg, "dag_id", cfg),
+                        "conf": getattr(cfg, "conf", {}) or {},
+                        "wait_for_completion": getattr(
+                            cfg, "wait_for_completion", False
+                        ),
+                        "reset_dag_run": getattr(cfg, "reset_dag_run", False),
+                        "poke_interval": getattr(cfg, "poke_interval", None),
+                    }
+                    if not isinstance(cfg, str)
+                    else {"dag_id": cfg, "conf": {}}
+                    for name, cfg in (
+                        self.generation.model_triggers or {}
+                    ).items()
+                },
                 "skip_backfill": self.generation.skip_backfill,
                 "plan_only": self.generation.plan_only,
                 "log_plan_details": self.generation.log_plan_details,

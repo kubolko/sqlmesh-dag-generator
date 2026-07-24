@@ -111,7 +111,15 @@ class AirflowDAGBuilder:
                 "from kubernetes.client.models import V1EnvVar",
             ])
 
-        if self.config.generation.trigger_dag_id:
+        if (
+            self.config.generation.trigger_dag_id
+            or self.config.generation.model_triggers
+            or any(
+                str(t).lower().startswith("trigger_dag:")
+                for m in self.dag_structure.models.values()
+                for t in (m.tags or [])
+            )
+        ):
             compat_symbols.append("TriggerDagRunOperator")
 
         if self.config.generation.include_source_tables:
@@ -397,22 +405,62 @@ dag = DAG(
         if len(dep_lines) == 1:
             dep_lines.append("# No dependencies")
 
-        # Add trigger downstream DAG if configured
+        # Per-model triggers (tags and/or generation.model_triggers)
+        from sqlmesh_dag_generator.triggers import (
+            default_trigger_conf,
+            resolve_model_trigger,
+            trigger_task_id,
+        )
+
+        dep_lines.append("")
+        dep_lines.append("# Per-model downstream DAG triggers")
+        any_model_trigger = False
+        for model_name, model_info in self.dag_structure.models.items():
+            cfg = resolve_model_trigger(
+                model_name,
+                tags=model_info.tags,
+                model_triggers=self.config.generation.model_triggers,
+            )
+            if not cfg:
+                continue
+            any_model_trigger = True
+            conf = default_trigger_conf(model_name, cfg.conf)
+            model_task = model_info.get_task_id()
+            tid = trigger_task_id(cfg.dag_id, model_task)
+            dep_lines.append(
+                f'''{tid} = TriggerDagRunOperator(
+    task_id="{tid}",
+    trigger_dag_id="{cfg.dag_id}",
+    conf={repr(conf)},
+    wait_for_completion={cfg.wait_for_completion},
+    reset_dag_run={cfg.reset_dag_run},
+    dag=dag,
+)
+{model_task} >> {tid}'''
+            )
+        if not any_model_trigger:
+            dep_lines.append("# (none)")
+
+        # Pipeline-level trigger after all leaves (optional)
         if self.config.generation.trigger_dag_id:
             trigger_conf = repr(self.config.generation.trigger_dag_conf or {})
             dep_lines.append("")
-            dep_lines.append("# Trigger downstream DAG on completion")
+            dep_lines.append("# Trigger downstream DAG on pipeline completion")
             dep_lines.append(f'''trigger_downstream = TriggerDagRunOperator(
     task_id="trigger_{self.config.generation.trigger_dag_id}",
     trigger_dag_id="{self.config.generation.trigger_dag_id}",
     conf={trigger_conf},
     dag=dag,
 )''')
-            # Find leaf tasks and set them as upstream
             leaf_tasks = [
                 info.get_task_id()
                 for name, info in self.dag_structure.models.items()
-                if name not in {dep for m in self.dag_structure.models.values() for dep in m.dependencies}
+                if name
+                not in {
+                    dep
+                    for m in self.dag_structure.models.values()
+                    for dep in m.dependencies
+                }
             ]
             if leaf_tasks:
                 dep_lines.append(f"[{', '.join(leaf_tasks)}] >> trigger_downstream")

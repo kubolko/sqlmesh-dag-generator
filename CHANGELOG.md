@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-07-24
+
+### Added
+- **Per-model downstream DAG triggers** for clean separation of concerns:
+  - Config: `generation.model_triggers` map (`model FQN` → dag id / dict / `ModelTriggerConfig`)
+  - SQLMesh-native tags on the model:
+    - `trigger_dag:<dag_id>`
+    - `trigger_conf:<key>=<value>` (optional, repeatable)
+  - Wired in `create_tasks_in_dag` (runtime / COWM style) and static `dag_builder`
+  - Explicit config wins over tags; pipeline-level `trigger_dag_id` still works after leaves
+- Module `sqlmesh_dag_generator.triggers` with `ModelTriggerConfig`, `resolve_model_trigger`, etc.
+
 ## [0.9.13] - 2026-07-23
 
 ### Added

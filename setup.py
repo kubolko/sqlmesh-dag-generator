@@ -20,7 +20,7 @@ if requirements_file.exists():
 
 setup(
     name="sqlmesh-dag-generator",
-    version="0.9.13",
+    version="0.9.14",
     description="Open-source Airflow DAG generator for SQLMesh projects",
     long_description=long_description,
     long_description_content_type="text/markdown",

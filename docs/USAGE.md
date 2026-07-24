@@ -1,5 +1,43 @@
 # Usage Guide
 
+## Per-model downstream DAG triggers (≥0.9.14)
+
+Fire an Airflow DAG **only after a specific SQLMesh model** succeeds (not after the whole pipeline). Ideal for RT unload / notify steps.
+
+### Option A — SQLMesh tags (preferred for SoC)
+
+```sql
+MODEL (
+  name dwh.rt_fraud_da_set,
+  kind FULL,
+  cron '*/10 * * * *',
+  tags (
+    rt,
+    flink,
+    'trigger_dag:etl_rt_fraud_da_unload',
+    'trigger_conf:source=sqlmesh'
+  )
+);
+```
+
+### Option B — generator config
+
+```yaml
+generation:
+  model_triggers:
+    dwh.rt_fraud_da_set:
+      dag_id: etl_rt_fraud_da_unload
+      conf:
+        source: sqlmesh
+```
+
+Or kwargs: `SQLMeshDAGGenerator(..., model_triggers={"dwh.rt_fraud_da_set": "etl_rt_fraud_da_unload"})`.
+
+**Priority:** explicit `model_triggers` > tags.  
+**Pipeline-level** `trigger_dag_id` still runs after all leaf models (optional, separate).
+
+---
+
 ## 🚀 Quick Start
 
 ### Simplest Usage (Dynamic Mode - Default)
