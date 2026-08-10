@@ -165,6 +165,10 @@ class GenerationConfig:
     skip_backfill: bool = False  # Skip apply if backfill is required (use with CI/CD deploys)
     plan_only: bool = False  # Generate plan without applying (for review/dry-run)
     log_plan_details: bool = True  # Log detailed plan information (snapshots, intervals)
+    # Mixed-cadence DAGs (schedule = min model interval): coarser models still get a
+    # task every tick. When True (default), those tasks return skipped/not_due *before*
+    # loading SQLMesh Context — avoids tens of seconds of no-op cost per tick.
+    skip_if_not_due: bool = True
 
     def __post_init__(self) -> None:
         # Normalize model_triggers so consumers always see ModelTriggerConfig
@@ -296,6 +300,7 @@ class DAGGeneratorConfig:
                 "skip_backfill": self.generation.skip_backfill,
                 "plan_only": self.generation.plan_only,
                 "log_plan_details": self.generation.log_plan_details,
+                "skip_if_not_due": self.generation.skip_if_not_due,
             },
         }
 

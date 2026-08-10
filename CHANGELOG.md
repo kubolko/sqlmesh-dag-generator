@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-08-10
+
+### Added
+- **`generation.skip_if_not_due` (default `True`)** for mixed-cadence DAGs:
+  when the DAG schedule is the minimum model interval (e.g. `*/5`) but the project
+  also has hourly/daily models, coarser model tasks **return early** with
+  `{"status": "skipped", "reason": "not_due"}` **before** loading SQLMesh
+  `Context` (Context alone often costs 30–50s per task on a no-op tick).
+- Helpers in `sqlmesh_dag_generator.utils` (also re-exported from package root):
+  `should_skip_model_for_tick`, `interval_end_matches_cron`, `not_due_skip_result`.
+- Wired in `create_tasks_in_dag` (runtime), static Python tasks, and dynamic DAG
+  generation. Depends on `croniter` (already common via Airflow).
+
+### Why
+Auto-schedule correctly picks the shortest interval, but every tick still scheduled
+*all* model tasks. Coarser models then either froze state (old bug, fixed by
+omitting start/end) or paid full Context cost for NOTHING_TO_DO. Early skip keeps
+the 5-minute wall-clock budget for models that are actually due.
+
+### Config
+```yaml
+generation:
+  skip_if_not_due: true   # default; set false only for break-glass debugging
+```
+
 ## [0.9.14] - 2026-07-24
 
 ### Added

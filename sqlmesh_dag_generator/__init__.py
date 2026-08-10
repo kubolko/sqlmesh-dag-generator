@@ -2,7 +2,7 @@
 SQLMesh DAG Generator - Open Source Airflow Integration for SQLMesh
 """
 
-__version__ = "0.9.14"
+__version__ = "0.9.15"
 
 
 from sqlmesh_dag_generator.generator import SQLMeshDAGGenerator
@@ -27,6 +27,11 @@ from sqlmesh_dag_generator.airflow_compat import (
     dag_schedule_kwargs,
     is_airflow_3,
 )
+from sqlmesh_dag_generator.utils import (
+    interval_end_matches_cron,
+    not_due_skip_result,
+    should_skip_model_for_tick,
+)
 
 __all__ = [
     "SQLMeshDAGGenerator",
@@ -47,6 +52,10 @@ __all__ = [
     "Variable",
     "dag_schedule_kwargs",
     "is_airflow_3",
+    # Mixed-cadence due-skip helpers
+    "interval_end_matches_cron",
+    "not_due_skip_result",
+    "should_skip_model_for_tick",
 ]
 
 

@@ -14,7 +14,12 @@ from sqlmesh_dag_generator.config import DAGGeneratorConfig, SQLMeshConfig, Airf
 from sqlmesh_dag_generator.models import SQLMeshModelInfo, DAGStructure
 from sqlmesh_dag_generator.dag_builder import AirflowDAGBuilder
 from sqlmesh_dag_generator.security import install_credential_filter, validate_connection_security
-from sqlmesh_dag_generator.utils import get_interval_frequency_minutes, sanitize_task_id
+from sqlmesh_dag_generator.utils import (
+    get_interval_frequency_minutes,
+    not_due_skip_result,
+    sanitize_task_id,
+    should_skip_model_for_tick,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +203,7 @@ class SQLMeshDAGGenerator:
                 skip_backfill=kwargs.get("skip_backfill", False),
                 plan_only=kwargs.get("plan_only", False),
                 log_plan_details=kwargs.get("log_plan_details", True),
+                skip_if_not_due=kwargs.get("skip_if_not_due", True),
             )
 
             self.config = DAGGeneratorConfig(
@@ -1069,8 +1075,36 @@ class SQLMeshDAGGenerator:
             task_id = model_info.get_task_id()
 
             # Create the execution function
-            def make_callable(m_name, m_fqn, m_interval_minutes=None):
+            def make_callable(m_name, m_fqn, m_interval_minutes=None, m_cron=None):
                 def execute_model(**context):
+                    # Get time interval (Airflow 2.2+)
+                    # data_interval_start/end provides correct time range for incremental models
+                    # Falls back to execution_date for backward compatibility with Airflow < 2.2
+                    start = context.get('data_interval_start') or context.get('execution_date')
+                    end = context.get('data_interval_end') or context.get('execution_date')
+
+                    # Mixed-cadence: skip coarser models when this tick is not their cron
+                    # *before* loading SQLMesh Context (Context alone is expensive).
+                    if should_skip_model_for_tick(
+                        cron_expr=m_cron,
+                        model_interval_minutes=m_interval_minutes,
+                        dag_tick_minutes=expected_interval_minutes,
+                        data_interval_end=end,
+                        skip_if_not_due=self.config.generation.skip_if_not_due,
+                    ):
+                        logger.info(
+                            "Skipping %s: not due at data_interval_end=%s "
+                            "(cron=%s, model=%smin, dag_tick=%smin)",
+                            m_fqn,
+                            end,
+                            m_cron,
+                            m_interval_minutes,
+                            expected_interval_minutes,
+                        )
+                        if not self.config.generation.return_value:
+                            return None
+                        return not_due_skip_result(m_fqn, m_cron)
+
                     from sqlmesh import Context
 
                     # Build context kwargs - use merged config if available
@@ -1091,12 +1125,6 @@ class SQLMeshDAGGenerator:
                     # Load fresh context with runtime connections
                     run_ctx = Context(**context_kwargs)
 
-                    # Get time interval (Airflow 2.2+)
-                    # data_interval_start/end provides correct time range for incremental models
-                    # Falls back to execution_date for backward compatibility with Airflow < 2.2
-                    start = context.get('data_interval_start') or context.get('execution_date')
-                    end = context.get('data_interval_end') or context.get('execution_date')
-
                     # When this model's interval is COARSER than the DAG tick,
                     # the tick's data_interval window (e.g. 5 minutes on a mixed
                     # sub-hourly + hourly project) spans no full model interval.
@@ -1104,6 +1132,7 @@ class SQLMeshDAGGenerator:
                     # silently freezes while the task still reports success.
                     # In that case omit start/end so SQLMesh selects the correct
                     # interval(s) from the model's own cron instead.
+                    # (Only reached when the model *is* due, or skip_if_not_due=False.)
                     if (
                         m_interval_minutes
                         and expected_interval_minutes
@@ -1216,6 +1245,7 @@ class SQLMeshDAGGenerator:
                     get_interval_frequency_minutes(model_info.interval_unit)
                     if model_info.interval_unit is not None
                     else None,
+                    model_info.cron,
                 ),
                 dag=dag,
             )

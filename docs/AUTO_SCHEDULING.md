@@ -44,6 +44,44 @@ recommended_schedule = generator.get_recommended_schedule()
 #          "@daily" if all models are daily or longer
 ```
 
+## ⚠️ Mixed cadences on one DAG (important)
+
+Auto-schedule sets the DAG to the **shortest** model interval. That means:
+
+| Model cron | DAG tick (`*/5`) | Behaviour with `skip_if_not_due=True` (default) |
+| --- | --- | --- |
+| `*/5 * * * *` | every 5 min | **Runs** (loads Context, `ctx.run`) |
+| `0 * * * *` (hourly) | every 5 min | **Skipped** until `data_interval_end` is on the hour |
+| daily | every 5 min | **Skipped** until the model’s own cron tick |
+
+Skip happens **before** `sqlmesh.Context(...)` so coarser models do not burn
+30–50s of worker time on no-op ticks (and do not push a 5-minute pipeline past
+its schedule window under `max_active_runs=1`).
+
+```python
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/path/to/project",
+    gateway="prod",
+    auto_replan_on_change=False,
+    # skip_if_not_due=True  # default since 0.9.15
+)
+```
+
+Set `skip_if_not_due=False` only when debugging “why didn’t this hourly model
+run?” — it restores the old always-run behaviour (expensive no-ops).
+
+XCom when skipped:
+
+```python
+{"status": "skipped", "reason": "not_due", "model": "...", "cron": "0 * * * *"}
+```
+
+### Optional: split DAGs by cadence
+
+If the hot path is still too heavy (e.g. many true 5-minute models), split into
+separate DAGs with `include_models` / tags rather than one mega-DAG. Early skip
+is the right default for mixed projects; split is the next step for scale.
+
 ## 🎯 How It Works
 
 ### 1. SQLMesh Models Define Intervals
