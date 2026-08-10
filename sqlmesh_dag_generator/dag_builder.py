@@ -155,11 +155,14 @@ class AirflowDAGBuilder:
 
     def _build_config(self) -> str:
         """Build configuration section"""
+        expected_interval_minutes = self._get_expected_interval_minutes()
         return dedent(f'''
             # SQLMesh Configuration
             SQLMESH_PROJECT_PATH = "{self.config.sqlmesh.project_path}"
             SQLMESH_ENVIRONMENT = "{self.config.sqlmesh.environment}"
             SQLMESH_GATEWAY = {f'"{self.config.sqlmesh.gateway}"' if self.config.sqlmesh.gateway else 'None'}
+            EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minutes is not None else "None"}
+            SKIP_IF_NOT_DUE = {self.config.generation.skip_if_not_due}
         ''').strip()
 
     def _build_dag_definition(self) -> str:
@@ -266,25 +269,47 @@ dag = DAG(
         # Escape model name for use in strings
         model_name_escaped = model_info.name.replace('"', '\\"')
 
+        model_cron = (model_info.cron or "").replace('"', '\\"')
+        model_interval_min = (
+            get_interval_frequency_minutes(model_info.interval_unit)
+            if model_info.interval_unit is not None
+            else "None"
+        )
+        skip_if_not_due = self.config.generation.skip_if_not_due
+
         # Build the execution function
         func_def = f'''def {function_name}(**context):
     """Execute SQLMesh model: {model_name_escaped}"""
+    from sqlmesh_dag_generator.utils import (
+        not_due_skip_result,
+        should_skip_model_for_tick,
+    )
+
+    # Get time interval from Airflow context (Airflow 2.2+)
+    start = context.get('data_interval_start') or context.get('execution_date')
+    end = context.get('data_interval_end') or context.get('execution_date')
+
+    if should_skip_model_for_tick(
+        cron_expr="{model_cron}" or None,
+        model_interval_minutes={model_interval_min},
+        dag_tick_minutes=EXPECTED_INTERVAL_MINUTES,
+        data_interval_end=end,
+        skip_if_not_due={skip_if_not_due},
+    ):
+        logger.info("Skipping {model_name_escaped}: not due at %s", end)
+        return not_due_skip_result("{model_name_escaped}", "{model_cron}" or None)
+
     logger.info("Executing SQLMesh model: {model_name_escaped}")
-    
+
     # Load SQLMesh context
     ctx = Context(
         paths=SQLMESH_PROJECT_PATH,
         gateway=SQLMESH_GATEWAY,
     )
-    
-    # Get time interval from Airflow context (Airflow 2.2+)
-    # Use data_interval for proper incremental model handling
-    start = context.get('data_interval_start') or context.get('execution_date')
-    end = context.get('data_interval_end') or context.get('execution_date')
-    
+
     # Run the specific model
     logger.info(f"Running model {model_name_escaped} for interval {{start}} to {{end}}")
-    
+
     # Use SQLMesh's run method with model selection
     result = ctx.run(
         environment=SQLMESH_ENVIRONMENT,
@@ -292,7 +317,7 @@ dag = DAG(
         end=end,
         select_models=["{model_name_escaped}"],
     )
-    
+
     logger.info(f"Model {model_name_escaped} completed successfully")
     return result'''
 
@@ -531,6 +556,7 @@ RECOVERY_MAX_INTERVALS = {self.config.airflow.recovery.max_intervals}
 RECOVERY_FAIL_ON_EXCESS_GAP = {self.config.airflow.recovery.fail_on_excess_gap}
 EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minutes is not None else 'None'}
 HAS_SUBHOURLY_INCREMENTAL = {has_subhourly_incremental}
+SKIP_IF_NOT_DUE = {self.config.generation.skip_if_not_due}
 
 logger.info(f"SQLMesh Project Path: {{SQLMESH_PROJECT_PATH}}")
 logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")
@@ -628,10 +654,21 @@ try:
                 deps.append(str(dep.name))
             else:
                 deps.append(str(dep))
+        _iu = getattr(model, "interval_unit", None)
+        _iu_name = str(_iu).upper().replace("INTERVALUNIT.", "") if _iu is not None else None
+        _freq = {{
+            "MINUTE": 1, "FIVE_MINUTE": 5, "TEN_MINUTE": 10,
+            "QUARTER_HOUR": 15, "FIFTEEN_MINUTE": 15,
+            "HALF_HOUR": 30, "THIRTY_MINUTE": 30, "HOUR": 60,
+            "DAY": 1440, "WEEK": 10080, "MONTH": 43200,
+            "QUARTER": 129600, "YEAR": 525600,
+        }}
         discovered_models[model_name] = {{
             "fqn": model.fqn,
             "name": str(model.name),
             "dependencies": deps,
+            "cron": getattr(model, "cron", None),
+            "interval_minutes": _freq.get(_iu_name) if _iu_name else None,
         }}
     
     logger.info(f"✓ Discovered {{{{len(discovered_models)}}}} SQLMesh models")
@@ -788,10 +825,31 @@ with DAG(
         task_id = task_id.strip("_")
         
         # Create callable for this model
-        def make_callable(model_fqn, model_display_name):
+        def make_callable(model_fqn, model_display_name, model_cron, model_interval_minutes):
             """Factory function to create model-specific callable"""
             def execute_model(**context):
                 """Execute SQLMesh model"""
+                from sqlmesh_dag_generator.utils import (
+                    not_due_skip_result,
+                    should_skip_model_for_tick,
+                )
+
+                start = context.get('data_interval_start') or context.get('execution_date')
+                end = context.get('data_interval_end') or context.get('execution_date')
+
+                if should_skip_model_for_tick(
+                    cron_expr=model_cron,
+                    model_interval_minutes=model_interval_minutes,
+                    dag_tick_minutes=EXPECTED_INTERVAL_MINUTES,
+                    data_interval_end=end,
+                    skip_if_not_due=SKIP_IF_NOT_DUE,
+                ):
+                    logger.info(
+                        f"Skipping {{model_display_name}}: not due at {{end}} "
+                        f"(cron={{model_cron}}, model={{model_interval_minutes}}min)"
+                    )
+                    return not_due_skip_result(model_fqn, model_cron)
+
                 logger.info(f"Executing SQLMesh model: {{model_display_name}}")
                 
                 try:
@@ -800,12 +858,6 @@ with DAG(
                         paths=SQLMESH_PROJECT_PATH,
                         gateway=SQLMESH_GATEWAY,
                     )
-                    
-                    # Get time interval (Airflow 2.2+)
-                    # data_interval_start/end provides correct time range for incremental models
-                    # Falls back to execution_date for backward compatibility with Airflow < 2.2
-                    start = context.get('data_interval_start') or context.get('execution_date')
-                    end = context.get('data_interval_end') or context.get('execution_date')
                     
                     logger.info(f"Running model {{model_display_name}} for interval {{start}} to {{end}}")
                     
@@ -837,7 +889,12 @@ with DAG(
         # Create PythonOperator
         task = PythonOperator(
             task_id=task_id,
-            python_callable=make_callable(model_info["fqn"], model_info["name"]),
+            python_callable=make_callable(
+                model_info["fqn"],
+                model_info["name"],
+                model_info.get("cron"),
+                model_info.get("interval_minutes"),
+            ),
         )
         
         tasks[model_name] = task

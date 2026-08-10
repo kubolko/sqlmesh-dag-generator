@@ -1,9 +1,13 @@
 """
 Utility functions for SQLMesh DAG Generator
 """
+import logging
 import re
-from typing import List, Optional, Tuple, Any
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple, Any, Dict
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def interval_to_cron(interval_unit: Optional[Any]) -> Optional[str]:
@@ -156,11 +160,103 @@ def parse_cron_schedule(cron: Optional[str]) -> Optional[str]:
         return None
 
     # Basic validation - cron should have 5 or 6 parts
-    parts = cron.strip().split()
+    # Airflow/SQLMesh also use aliases like @hourly / @daily (handled by croniter).
+    raw = cron.strip()
+    if raw.startswith("@"):
+        return raw
+
+    parts = raw.split()
     if len(parts) not in [5, 6]:
         return None
 
-    return cron
+    return raw
+
+
+def interval_end_matches_cron(cron_expr: str, data_interval_end: datetime) -> bool:
+    """
+    True when ``data_interval_end`` is an exact fire time of ``cron_expr``.
+
+    Used for mixed-cadence DAGs: schedule is the *minimum* model interval (e.g.
+    ``*/5``), but coarser models (hourly/daily) should only *work* on their own
+    cron ticks. Requires ``croniter`` (shipped with Airflow).
+    """
+    if not cron_expr or data_interval_end is None:
+        return True
+    try:
+        from croniter import croniter
+    except ImportError:  # pragma: no cover
+        logger.warning(
+            "croniter is not installed; cannot evaluate cron due-ness for %r",
+            cron_expr,
+        )
+        return True
+
+    end = data_interval_end
+    probe = end - timedelta(seconds=1)
+    nxt = croniter(cron_expr, probe).get_next(type(end))
+    return nxt == end
+
+
+def interval_end_matches_minutes(
+    interval_minutes: int, data_interval_end: datetime
+) -> bool:
+    """
+    Fallback due-check when a model has interval_unit but no cron string.
+
+    Aligns to wall-clock boundaries (UTC if tz-aware): every N minutes from the
+    hour for N < 60, on the hour for N == 60, midnight for N >= 1440.
+    """
+    if not interval_minutes or data_interval_end is None:
+        return True
+    end = data_interval_end
+    if interval_minutes >= 1440:
+        return end.hour == 0 and end.minute == 0 and end.second == 0
+    if interval_minutes >= 60:
+        # Multi-hour: require minute=0 and hour % (N/60) == 0
+        hours = max(1, interval_minutes // 60)
+        return end.minute == 0 and end.second == 0 and (end.hour % hours) == 0
+    return end.second == 0 and (end.minute % interval_minutes) == 0
+
+
+def should_skip_model_for_tick(
+    *,
+    cron_expr: Optional[str] = None,
+    model_interval_minutes: Optional[int] = None,
+    dag_tick_minutes: Optional[int] = None,
+    data_interval_end: Optional[datetime] = None,
+    skip_if_not_due: bool = True,
+) -> bool:
+    """
+    Whether a model task should no-op on this Airflow DAG tick.
+
+    When the DAG schedule is the min model interval (auto_schedule), coarser
+    models still get a task every tick. Running them loads SQLMesh ``Context``
+    (~tens of seconds) even when SQLMesh would do nothing. Skip those ticks
+    *before* Context load when the model is not due.
+    """
+    if not skip_if_not_due:
+        return False
+    if data_interval_end is None:
+        return False
+    if not model_interval_minutes or not dag_tick_minutes:
+        return False
+    # Same cadence as the DAG (or finer): always run on every tick.
+    if model_interval_minutes <= dag_tick_minutes:
+        return False
+
+    if cron_expr:
+        return not interval_end_matches_cron(cron_expr, data_interval_end)
+    return not interval_end_matches_minutes(model_interval_minutes, data_interval_end)
+
+
+def not_due_skip_result(model_fqn: str, cron_expr: Optional[str] = None) -> Dict[str, Any]:
+    """XCom-friendly payload when a model is skipped as not due."""
+    return {
+        "status": "skipped",
+        "reason": "not_due",
+        "model": model_fqn,
+        "cron": cron_expr,
+    }
 
 
 def detect_circular_dependencies(dependencies: dict) -> Optional[List[str]]:
