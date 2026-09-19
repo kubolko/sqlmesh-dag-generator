@@ -1,15 +1,15 @@
 """
 Tests for utility functions
 """
-import pytest
+
+from sqlmesh_dag_generator.models import SQLMeshModelInfo
 from sqlmesh_dag_generator.utils import (
-    sanitize_task_id,
-    parse_cron_schedule,
     detect_circular_dependencies,
     get_model_lineage,
-    estimate_dag_complexity,
+    localize_to_cron_tz,
+    parse_cron_schedule,
+    sanitize_task_id,
 )
-from sqlmesh_dag_generator.models import SQLMeshModelInfo
 
 
 def test_sanitize_task_id():
@@ -62,9 +62,14 @@ def test_get_model_lineage():
     assert "model3" in lineage["downstream"]
 
 
-def test_estimate_dag_complexity():
-    """Test DAG complexity estimation"""
-    assert estimate_dag_complexity(5, 5) == "simple"
-    assert estimate_dag_complexity(30, 60) == "moderate"
-    assert estimate_dag_complexity(100, 500) == "complex"
+def test_localize_to_cron_tz():
+    """Naive timestamps are assumed to be UTC before converting."""
+    from datetime import datetime, timezone
 
+    naive = datetime(2024, 7, 1, 22, 0)
+    localized = localize_to_cron_tz(naive, "Europe/Warsaw")
+    assert localized.hour == 0 and localized.day == 2
+
+    aware = datetime(2024, 7, 1, 22, 0, tzinfo=timezone.utc)
+    assert localize_to_cron_tz(aware, "Europe/Warsaw").hour == 0
+    assert localize_to_cron_tz(aware, None) is aware

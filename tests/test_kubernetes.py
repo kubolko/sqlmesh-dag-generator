@@ -9,11 +9,13 @@ Tests the Kubernetes operator generation including:
 - Proper imports
 """
 
-import pytest
 import ast
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
+
+import pytest
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 from sqlmesh_dag_generator.config import DAGGeneratorConfig
 
@@ -82,15 +84,17 @@ class TestKubernetesOperator:
 
     def test_kubernetes_requires_docker_image(self, demo_sqlmesh_project):
         """Test that kubernetes operator requires docker_image in config"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                # Missing docker_image - should raise error
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    # Missing docker_image - should raise error
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
 
@@ -100,16 +104,18 @@ class TestKubernetesOperator:
 
     def test_kubernetes_dag_generation_with_image(self, demo_sqlmesh_project):
         """Test successful kubernetes DAG generation with docker_image"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
-                "namespace": "data-pipelines"
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                    "namespace": "data-pipelines",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -119,7 +125,10 @@ class TestKubernetesOperator:
         assert len(dag_code) > 0
 
         # Verify Kubernetes-specific imports
-        assert "from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator" in dag_code
+        assert (
+            "from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator"
+            in dag_code
+        )
         assert "from kubernetes.client.models import V1EnvVar" in dag_code
 
         # Verify docker image is used
@@ -134,16 +143,18 @@ class TestKubernetesOperator:
 
     def test_kubernetes_default_namespace(self, demo_sqlmesh_project):
         """Test that namespace defaults to 'default' if not specified"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
-                # namespace not specified
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                    # namespace not specified
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -153,15 +164,17 @@ class TestKubernetesOperator:
 
     def test_kubernetes_dag_syntax_valid(self, demo_sqlmesh_project):
         """Test that generated Kubernetes DAG has valid Python syntax"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -174,21 +187,23 @@ class TestKubernetesOperator:
 
     def test_kubernetes_environment_variables(self, demo_sqlmesh_project):
         """Test that environment variables are properly injected in K8s tasks"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {
-                "dag_id": "test_k8s",
-                "env_vars": {
-                    "SNOWFLAKE_ACCOUNT": "{{ var.value.snowflake_account }}",
-                    "DB_HOST": "prod-db.example.com"
-                }
-            },
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {
+                    "dag_id": "test_k8s",
+                    "env_vars": {
+                        "SNOWFLAKE_ACCOUNT": "{{ var.value.snowflake_account }}",
+                        "DB_HOST": "prod-db.example.com",
+                    },
+                },
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -204,15 +219,17 @@ class TestKubernetesOperator:
 
     def test_kubernetes_task_arguments(self, demo_sqlmesh_project):
         """Test that Kubernetes tasks have proper sqlmesh command arguments"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -230,15 +247,17 @@ class TestKubernetesOperator:
 
     def test_kubernetes_pod_cleanup(self, demo_sqlmesh_project):
         """Test that Kubernetes pods are configured to be deleted after execution"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -249,14 +268,16 @@ class TestKubernetesOperator:
 
     def test_invalid_operator_type_raises_error(self, demo_sqlmesh_project):
         """Test that invalid operator type raises clear error"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_invalid"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "invalid_operator",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_invalid"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "invalid_operator",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
 
@@ -266,18 +287,20 @@ class TestKubernetesOperator:
 
     def test_kubernetes_with_gateway(self, demo_sqlmesh_project):
         """Test Kubernetes operator with SQLMesh gateway configuration"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {
-                "project_path": demo_sqlmesh_project,
-                "gateway": "local"  # Use existing gateway from demo project
-            },
-            "airflow": {"dag_id": "test_k8s"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {
+                    "project_path": demo_sqlmesh_project,
+                    "gateway": "local",  # Use existing gateway from demo project
+                },
+                "airflow": {"dag_id": "test_k8s"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -288,15 +311,17 @@ class TestKubernetesOperator:
 
     def test_kubernetes_multiple_tasks(self, demo_sqlmesh_project):
         """Test that multiple models generate multiple K8s pods"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_k8s_multi"},
-            "generation": {
-                "mode": "static",
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_k8s_multi"},
+                "generation": {
+                    "mode": "static",
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()
@@ -312,35 +337,38 @@ class TestKubernetesConfiguration:
 
     def test_docker_image_field_exists(self):
         """Test that docker_image field exists in GenerationConfig"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": "/path/to/project"},
-            "airflow": {"dag_id": "test"},
-            "generation": {
-                "docker_image": "my-image:v1.0",
-                "namespace": "my-namespace"
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": "/path/to/project"},
+                "airflow": {"dag_id": "test"},
+                "generation": {"docker_image": "my-image:v1.0", "namespace": "my-namespace"},
             }
-        })
+        )
 
         assert config.generation.docker_image == "my-image:v1.0"
         assert config.generation.namespace == "my-namespace"
 
     def test_namespace_defaults_to_default(self):
         """Test that namespace defaults to 'default'"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": "/path/to/project"},
-            "airflow": {"dag_id": "test"},
-            "generation": {}
-        })
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": "/path/to/project"},
+                "airflow": {"dag_id": "test"},
+                "generation": {},
+            }
+        )
 
         assert config.generation.namespace == "default"
 
     def test_docker_image_defaults_to_none(self):
         """Test that docker_image defaults to None"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": "/path/to/project"},
-            "airflow": {"dag_id": "test"},
-            "generation": {}
-        })
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": "/path/to/project"},
+                "airflow": {"dag_id": "test"},
+                "generation": {},
+            }
+        )
 
         assert config.generation.docker_image is None
 
@@ -353,15 +381,17 @@ class TestDynamicModeKubernetesLimitation:
         # Note: This documents current limitation
         # When we implement kubernetes in dynamic mode, this test should be updated
 
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_dynamic_k8s"},
-            "generation": {
-                "mode": "dynamic",  # Dynamic mode
-                "operator_type": "kubernetes",
-                "docker_image": "my-sqlmesh:v1.0",
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_dynamic_k8s"},
+                "generation": {
+                    "mode": "dynamic",  # Dynamic mode
+                    "operator_type": "kubernetes",
+                    "docker_image": "my-sqlmesh:v1.0",
+                },
             }
-        })
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dynamic_dag()
@@ -375,4 +405,3 @@ class TestDynamicModeKubernetesLimitation:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
