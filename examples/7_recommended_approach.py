@@ -4,11 +4,11 @@ RECOMMENDED APPROACH: Direct Connection Usage
 This example demonstrates the NEW, CLEANER way to configure SQLMesh DAG Generator.
 
 Key improvements over the old approach:
-✅ Pass connection objects directly - no conversion needed
-✅ Works with ANY credential source (Airflow, AWS, Vault, etc.)
-✅ Extensible via plugins
-✅ Less boilerplate
-✅ More Pythonic
+Pass connection objects directly - no conversion needed
+Works with ANY credential source (Airflow, AWS, Vault, etc.)
+Extensible via plugins
+Less boilerplate
+More Pythonic
 
 OLD WAY (still works, but deprecated):
     connection_config = airflow_connection_to_sqlmesh_config("postgres_prod")
@@ -20,9 +20,11 @@ NEW WAY:
 """
 
 from datetime import datetime
+
 from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.models import Variable
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 
 # Get configuration from Airflow Variables
@@ -51,7 +53,7 @@ with DAG(
     generator = SQLMeshDAGGenerator(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
-        connection=conn,  # ✅ Direct object - clean and Pythonic!
+        connection=conn,  # Direct object - clean and Pythonic!
     )
 
     generator.create_tasks_in_dag(dag1)
@@ -75,7 +77,7 @@ with DAG(
     generator = SQLMeshDAGGenerator(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
-        connection="postgres_prod",  # ✅ Simple string - auto-resolved!
+        connection="postgres_prod",  # Simple string - auto-resolved!
     )
 
     generator.create_tasks_in_dag(dag2)
@@ -109,7 +111,7 @@ with DAG(
     generator = SQLMeshDAGGenerator(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
-        connection=connection_config,  # ✅ Dict works too!
+        connection=connection_config,  # Dict works too!
     )
 
     generator.create_tasks_in_dag(dag3)
@@ -138,8 +140,8 @@ with DAG(
     generator = SQLMeshDAGGenerator(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
-        connection=data_conn,        # ✅ Direct objects
-        state_connection=state_conn,  # ✅ No conversion!
+        connection=data_conn,  # Direct objects
+        state_connection=state_conn,  # No conversion!
     )
 
     generator.create_tasks_in_dag(dag4)
@@ -164,7 +166,7 @@ with DAG(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
         connection="prod/database/credentials",
-        credential_resolver="aws_secrets",  # ✅ Specify resolver type
+        credential_resolver="aws_secrets",  # Specify resolver type
     )
 
     generator.create_tasks_in_dag(dag5)
@@ -177,18 +179,21 @@ with DAG(
 
 from sqlmesh_dag_generator import CredentialResolver, register_credential_resolver
 
+
 class VaultResolver(CredentialResolver):
     """Custom resolver for HashiCorp Vault."""
 
     def resolve(self, identifier):
         # Your Vault integration logic here
         import hvac
-        client = hvac.Client(url='https://vault.company.com')
+
+        client = hvac.Client(url="https://vault.company.com")
         secret = client.secrets.kv.v2.read_secret_version(path=identifier)
-        return secret['data']['data']
+        return secret["data"]["data"]
+
 
 # Register your custom resolver
-register_credential_resolver('vault', VaultResolver())
+register_credential_resolver("vault", VaultResolver())
 
 with DAG(
     dag_id="sqlmesh_vault",
@@ -203,7 +208,7 @@ with DAG(
         sqlmesh_project_path=SQLMESH_PROJECT,
         gateway=GATEWAY,
         connection="secret/data/database",
-        credential_resolver="vault",  # ✅ Use your custom resolver!
+        credential_resolver="vault",  # Use your custom resolver!
     )
 
     generator.create_tasks_in_dag(dag6)
@@ -226,6 +231,5 @@ with DAG(
 #
 #   NEW: generator = SQLMeshDAGGenerator(..., connection="postgres")
 #
-# That's it! 2 lines → 1 line, and it works with ANY credential source!
+# That's it! 2 lines 1 line, and it works with ANY credential source!
 # ==============================================================================
-

@@ -8,12 +8,14 @@ Tests the main generator functionality including:
 - Dependency handling
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 from sqlmesh_dag_generator.config import DAGGeneratorConfig
 from sqlmesh_dag_generator.models import SQLMeshModelInfo
@@ -83,29 +85,25 @@ class TestSQLMeshDAGGenerator:
 
     def test_initialization_simple(self):
         """Test simple initialization"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/path/to/project",
-            dag_id="test_dag"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path="/path/to/project", dag_id="test_dag")
         assert generator.config.airflow.dag_id == "test_dag"
         assert generator.config.generation.mode == "dynamic"  # Default
 
     def test_initialization_with_config(self):
         """Test initialization with config object"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": "/path/to/project"},
-            "airflow": {"dag_id": "my_dag"},
-            "generation": {"mode": "dynamic"}
-        })
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": "/path/to/project"},
+                "airflow": {"dag_id": "my_dag"},
+                "generation": {"mode": "dynamic"},
+            }
+        )
         generator = SQLMeshDAGGenerator(config=config)
         assert generator.config.airflow.dag_id == "my_dag"
 
     def test_extract_models(self, demo_sqlmesh_project):
         """Test model extraction from SQLMesh project"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         models = generator.extract_models()
 
@@ -118,10 +116,7 @@ class TestSQLMeshDAGGenerator:
 
     def test_model_dependencies(self, demo_sqlmesh_project):
         """Test that dependencies are correctly extracted"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         models = generator.extract_models()
         model_names = list(models.keys())
@@ -143,8 +138,7 @@ class TestSQLMeshDAGGenerator:
     def test_generate_dynamic_dag(self, demo_sqlmesh_project):
         """Test dynamic DAG generation"""
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test_dag"
+            sqlmesh_project_path=demo_sqlmesh_project, dag_id="test_dag"
         )
 
         dag_code = generator.generate_dynamic_dag()
@@ -170,8 +164,7 @@ class TestSQLMeshDAGGenerator:
         import ast
 
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test_dag"
+            sqlmesh_project_path=demo_sqlmesh_project, dag_id="test_dag"
         )
 
         dag_code = generator.generate_dynamic_dag()
@@ -184,13 +177,13 @@ class TestSQLMeshDAGGenerator:
 
     def test_create_tasks_in_dag_returns_tasks(self, demo_sqlmesh_project):
         """Test that create_tasks_in_dag returns task dict"""
-        from airflow import DAG
         from datetime import datetime
+
+        from airflow import DAG
 
         with DAG("test", start_date=datetime(2024, 1, 1)) as dag:
             generator = SQLMeshDAGGenerator(
-                sqlmesh_project_path=demo_sqlmesh_project,
-                dag_id="test"
+                sqlmesh_project_path=demo_sqlmesh_project, dag_id="test"
             )
 
             tasks = generator.create_tasks_in_dag(dag)
@@ -201,12 +194,14 @@ class TestSQLMeshDAGGenerator:
 
             # All values should be Airflow operators
             for task in tasks.values():
-                assert hasattr(task, 'task_id')
-                assert hasattr(task, 'python_callable')
+                assert hasattr(task, "task_id")
+                assert hasattr(task, "python_callable")
 
     @patch("sqlmesh.Context")
     @patch("sqlmesh_dag_generator.generator.Context")
-    def test_execute_model_omits_window_for_coarser_than_tick_models(self, mock_mod_context, mock_sqlmesh_context):
+    def test_execute_model_omits_window_for_coarser_than_tick_models(
+        self, mock_mod_context, mock_sqlmesh_context
+    ):
         """A model whose interval is coarser than the DAG tick must not be run
         with the tick's narrow window.
 
@@ -255,13 +250,16 @@ class TestSQLMeshDAGGenerator:
             tasks = generator.create_tasks_in_dag(dag)
 
         # 5-minute tick window (what the scheduler hands every task).
-        tick_start = datetime(2024, 1, 6, 12, 25)
-        tick_end = datetime(2024, 1, 6, 12, 30)
+        # The tick ends on a full hour so the hourly model is due on it
+        # (see test_skip_if_not_due for the "not due" ticks).
+        tick_start = datetime(2024, 1, 6, 12, 55)
+        tick_end = datetime(2024, 1, 6, 13, 0)
 
         # Hourly model (coarser than tick): must be run WITHOUT start/end.
         run_ctx.run.reset_mock()
         tasks["dwh.f_hourly"].python_callable(
-            data_interval_start=tick_start, data_interval_end=tick_end,
+            data_interval_start=tick_start,
+            data_interval_end=tick_end,
         )
         run_ctx.run.assert_called_once()
         _, hourly_kwargs = run_ctx.run.call_args
@@ -272,7 +270,8 @@ class TestSQLMeshDAGGenerator:
         # 5-min model (matches tick): keeps the explicit window (unchanged).
         run_ctx.run.reset_mock()
         tasks["dwh.raw_5m"].python_callable(
-            data_interval_start=tick_start, data_interval_end=tick_end,
+            data_interval_start=tick_start,
+            data_interval_end=tick_end,
         )
         run_ctx.run.assert_called_once()
         _, raw_kwargs = run_ctx.run.call_args
@@ -282,11 +281,13 @@ class TestSQLMeshDAGGenerator:
 
     def test_static_dag_generation(self, demo_sqlmesh_project):
         """Test static DAG generation (alternative mode)"""
-        config = DAGGeneratorConfig.from_dict({
-            "sqlmesh": {"project_path": demo_sqlmesh_project},
-            "airflow": {"dag_id": "test_static"},
-            "generation": {"mode": "static"}
-        })
+        config = DAGGeneratorConfig.from_dict(
+            {
+                "sqlmesh": {"project_path": demo_sqlmesh_project},
+                "airflow": {"dag_id": "test_static"},
+                "generation": {"mode": "static"},
+            }
+        )
 
         generator = SQLMeshDAGGenerator(config=config)
         dag_code = generator.generate_dag()  # Use generate_dag for static
@@ -301,10 +302,7 @@ class TestSQLMeshDAGGenerator:
 
     def test_dag_structure_building(self, demo_sqlmesh_project):
         """Test DAG structure is built correctly"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         generator.extract_models()
         dag_structure = generator.build_dag_structure()
@@ -321,10 +319,7 @@ class TestSQLMeshDAGGenerator:
 
     def test_validation(self, demo_sqlmesh_project):
         """Test validation method"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         # Should validate successfully
         is_valid = generator.validate()
@@ -332,10 +327,7 @@ class TestSQLMeshDAGGenerator:
 
     def test_invalid_project_path(self):
         """Test behavior with invalid project path"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/nonexistent/path",
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path="/nonexistent/path", dag_id="test")
 
         # Validation should fail
         is_valid = generator.validate()
@@ -344,10 +336,7 @@ class TestSQLMeshDAGGenerator:
     def test_configuration_from_dict(self):
         """Test configuration from dictionary"""
         config_dict = {
-            "sqlmesh": {
-                "project_path": "/path/to/project",
-                "environment": "prod"
-            },
+            "sqlmesh": {"project_path": "/path/to/project", "environment": "prod"},
             "airflow": {
                 "dag_id": "my_dag",
                 "schedule_interval": "@daily",
@@ -356,12 +345,9 @@ class TestSQLMeshDAGGenerator:
                     "mode": "warn",
                     "max_intervals": 4,
                     "fail_on_excess_gap": True,
-                }
+                },
             },
-            "generation": {
-                "mode": "dynamic",
-                "output_dir": "./dags"
-            }
+            "generation": {"mode": "dynamic", "output_dir": "./dags"},
         }
 
         config = DAGGeneratorConfig.from_dict(config_dict)
@@ -649,10 +635,7 @@ class TestDynamicFeatures:
 
     def test_airflow_variables_in_dynamic_dag(self, demo_sqlmesh_project):
         """Test that dynamic DAG uses Airflow Variables"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         dag_code = generator.generate_dynamic_dag()
 
@@ -662,10 +645,7 @@ class TestDynamicFeatures:
 
     def test_runtime_discovery_in_dynamic_dag(self, demo_sqlmesh_project):
         """Test that dynamic DAG discovers models at runtime"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         dag_code = generator.generate_dynamic_dag()
 
@@ -691,10 +671,7 @@ class TestDynamicFeatures:
 
     def test_error_handling_in_dynamic_dag(self, demo_sqlmesh_project):
         """Test that dynamic DAG has proper error handling"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         dag_code = generator.generate_dynamic_dag()
 
@@ -709,10 +686,7 @@ class TestIncrementalHandling:
 
     def test_data_interval_usage(self, demo_sqlmesh_project):
         """Test that generated code uses data_interval_start/end"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         dag_code = generator.generate_dynamic_dag()
 
@@ -725,10 +699,7 @@ class TestIncrementalHandling:
 
     def test_time_range_in_sqlmesh_run(self, demo_sqlmesh_project):
         """Test that SQLMesh run uses start and end parameters"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=demo_sqlmesh_project,
-            dag_id="test"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path=demo_sqlmesh_project, dag_id="test")
 
         dag_code = generator.generate_dynamic_dag()
 
@@ -739,4 +710,3 @@ class TestIncrementalHandling:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

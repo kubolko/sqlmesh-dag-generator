@@ -1,10 +1,10 @@
-# 🚀 Quick Start Guide - SQLMesh DAG Generator
+# Quick Start Guide - SQLMesh DAG Generator
 
 This guide shows you how to generate Airflow DAGs from your SQLMesh project in **under 5 minutes**.
 
 ---
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Python 3.8+
 - An existing SQLMesh project
@@ -12,7 +12,7 @@ This guide shows you how to generate Airflow DAGs from your SQLMesh project in *
 
 ---
 
-## 🔧 Installation
+## Installation
 
 ### Option 1: Install from PyPI (when published)
 ```bash
@@ -36,7 +36,7 @@ pip install sqlmesh airflow pyyaml
 
 ---
 
-## 🎯 Use Case: Generate DAG for Your SQLMesh Project
+## Use Case: Generate DAG for Your SQLMesh Project
 
 ### Step 1: Prepare Your SQLMesh Project
 
@@ -62,7 +62,7 @@ MODEL (
   owner 'data-team',
 );
 
-SELECT 
+SELECT
   user_id,
   email,
   created_at
@@ -71,7 +71,7 @@ FROM raw.users;
 
 ---
 
-## 🚀 Option A: Dynamic DAG (Recommended - Fire & Forget)
+## Option A: Dynamic DAG (Recommended - Fire & Forget)
 
 **Best for:** Projects where models change frequently. Place the DAG file once and forget about it!
 
@@ -80,7 +80,7 @@ FROM raw.users;
 Create `dag_config.yaml`:
 ```yaml
 sqlmesh:
-  project_path: "/path/to/my_sqlmesh_project"  # ⚠️ UPDATE THIS
+  project_path: "/path/to/my_sqlmesh_project"  # UPDATE THIS
   environment: "prod"
   gateway: null  # Optional: specify SQLMesh gateway
 
@@ -99,7 +99,7 @@ airflow:
 
 generation:
   output_dir: "./dags"
-  mode: "dynamic"  # 🔥 Dynamic mode - auto-discovers models!
+  mode: "dynamic"  # Dynamic mode - auto-discovers models!
   operator_type: "python"
   dry_run: false
 ```
@@ -119,8 +119,8 @@ config = DAGGeneratorConfig.from_file("dag_config.yaml")
 generator = SQLMeshDAGGenerator(config=config)
 dag_code = generator.generate_dynamic_dag()
 
-print("✅ Dynamic DAG generated!")
-print(f"📁 File: {config.generation.output_dir}/{config.airflow.dag_id}.py")
+print("Dynamic DAG generated!")
+print(f"File: {config.generation.output_dir}/{config.airflow.dag_id}.py")
 EOF
 ```
 
@@ -161,15 +161,15 @@ In Airflow UI, go to **Admin > Variables** and set:
 | `sqlmesh_environment` | `prod` | Environment (prod/dev/staging) |
 | `sqlmesh_gateway` | `my_gateway` | Optional: SQLMesh gateway |
 
-**That's it! 🎉** The DAG will:
-- ✅ Auto-discover all SQLMesh models
-- ✅ Create one task per model
-- ✅ Build dependencies from SQLMesh lineage
-- ✅ Update automatically when models change (no regeneration needed!)
+**That's it! ** The DAG will:
+- Auto-discover all SQLMesh models
+- Create one task per model
+- Build dependencies from SQLMesh lineage
+- Update automatically when models change (no regeneration needed!)
 
 ---
 
-## 🔄 Option B: Static DAG (More Control)
+## Option B: Static DAG (More Control)
 
 **Best for:** Stable pipelines where you want full control over the generated code.
 
@@ -211,7 +211,7 @@ Same as Option A - copy to Airflow's dags folder.
 
 ---
 
-## 📊 What You Get
+## What You Get
 
 ### Generated DAG Structure
 
@@ -222,9 +222,9 @@ Your Airflow UI will show:
 ├─────────────────────────────────────┤
 │                                     │
 │  [raw_users]                        │
-│       ↓                             │
+│       │
 │  [stg_users]                        │
-│       ↓                             ��
+│       ��
 │  [dim_users]                        │
 │                                     │
 └─────────────────────────────────────┘
@@ -235,13 +235,13 @@ Each model becomes a separate task with proper dependencies!
 ### Task Naming Convention
 
 SQLMesh model names are sanitized for Airflow:
-- `"my_db"."my_schema"."my_model"` → `sqlmesh_my_db_my_schema_my_model`
+- `"my_db"."my_schema"."my_model"` `sqlmesh_my_db_my_schema_my_model`
 - Quotes, dots, spaces removed
 - Prefix `sqlmesh_` added
 
 ---
 
-## 🎨 Example: Complete Workflow
+## Example: Complete Workflow
 
 Let's say you have this SQLMesh project:
 
@@ -269,13 +269,13 @@ dag_code = generator.generate_dynamic_dag()
 with open("dags/orders_pipeline.py", "w") as f:
     f.write(dag_code)
 
-print("✅ Generated DAG with 3 models")
+print("Generated DAG with 3 models")
 ```
 
 **2. View in Airflow:**
 ```
 Graph View shows:
-  raw_orders → stg_orders → orders_summary
+  raw_orders stg_orders orders_summary
 ```
 
 **3. Run the DAG:**
@@ -286,7 +286,7 @@ Graph View shows:
 
 ---
 
-## 🔍 Verify the Generation
+## Verify the Generation
 
 ### Before Deploying, Check:
 
@@ -310,9 +310,9 @@ for name, info in models.items():
 # 2. Validate SQLMesh context loads
 try:
     generator.load_sqlmesh_context()
-    print("✅ SQLMesh context loaded successfully")
+    print("SQLMesh context loaded successfully")
 except Exception as e:
-    print(f"❌ Error loading SQLMesh: {e}")
+    print(f"Error loading SQLMesh: {e}")
 
 # 3. Generate and validate syntax
 dag_code = generator.generate_dynamic_dag()
@@ -320,14 +320,14 @@ dag_code = generator.generate_dynamic_dag()
 import ast
 try:
     ast.parse(dag_code)
-    print("✅ Generated DAG syntax is valid")
+    print("Generated DAG syntax is valid")
 except SyntaxError as e:
-    print(f"❌ Syntax error: {e}")
+    print(f"Syntax error: {e}")
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Issue: "Failed to load SQLMesh context"
 
@@ -388,12 +388,12 @@ airflow variables set sqlmesh_environment "prod"
 
 ---
 
-## 📚 Next Steps
+## Next Steps
 
 ### Learn More:
-- 📖 [Dynamic vs Static Mode Comparison](DYNAMIC_DAG_FEATURE.md)
-- 🔧 [Configuration Reference](examples/config_example.yaml)
-- 🎯 [Advanced Examples](examples/basic_usage.py)
+- [Usage reference: dynamic vs static mode](USAGE.md)
+- [Configuration Reference](examples/config_example.yaml)
+- [Advanced Examples](examples/basic_usage.py)
 
 ### Customize Your DAG:
 ```yaml
@@ -409,7 +409,7 @@ generation:
 
 ---
 
-## 💡 Pro Tips
+## Pro Tips
 
 ### 1. **Use Dynamic Mode for Active Development**
 ```yaml
@@ -439,18 +439,18 @@ generation:
 
 ---
 
-## 🎉 Success!
+## Success!
 
 You now have:
-✅ Airflow DAG generated from SQLMesh  
-✅ Full data lineage visible in Airflow  
-✅ One task per SQLMesh model  
-✅ Proper dependencies from SQLMesh  
-✅ Multi-environment support  
+Airflow DAG generated from SQLMesh
+Full data lineage visible in Airflow
+One task per SQLMesh model
+Proper dependencies from SQLMesh
+Multi-environment support
 
 **Questions?** Check the [documentation](README.md) or [examples](examples/).
 
 ---
 
-**Happy orchestrating! 🚀**
+**Happy orchestrating! **
 

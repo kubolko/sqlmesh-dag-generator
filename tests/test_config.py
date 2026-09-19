@@ -1,16 +1,16 @@
 """
 Tests for configuration module
 """
-import pytest
+
 import tempfile
 from pathlib import Path
 
 from sqlmesh_dag_generator.config import (
-    SQLMeshConfig,
     AirflowConfig,
-    GenerationConfig,
     DAGGeneratorConfig,
+    GenerationConfig,
     RecoveryConfig,
+    SQLMeshConfig,
 )
 
 
@@ -113,4 +113,3 @@ def test_dag_generator_config_save_load():
         loaded_config = DAGGeneratorConfig.from_file(str(config_file))
         assert loaded_config.sqlmesh.project_path == "/test"
         assert loaded_config.airflow.dag_id == "test_dag"
-

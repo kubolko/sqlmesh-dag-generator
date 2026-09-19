@@ -1,0 +1,79 @@
+# sqlmesh-dag-generator configuration: one project, several DAGs.
+#
+#   sqlmesh-dag-gen --config config_dag_groups.yaml --list-groups
+#   sqlmesh-dag-gen --config config_dag_groups.yaml --manifest target/orchestration.json
+#
+# and in dags/dwh_sqlmesh.py:
+#
+#   from sqlmesh_dag_generator import DAGGeneratorConfig, build_dag_groups
+#   for dag_id, dag in build_dag_groups(
+#       DAGGeneratorConfig.from_file("/opt/airflow/config/config_dag_groups.yaml")
+#   ).items():
+#       globals()[dag_id] = dag
+
+sqlmesh:
+  project_path: /opt/airflow/sqlmesh_project
+  gateway: prod          # gateway switches dev/staging/prod, not `environment`
+  environment: ""        # empty = run against prod schemas, no virtual environment
+
+airflow:
+  dag_id: dwh            # fallback for settings a group does not override
+  start_date: "2024-01-01"
+  catchup: false
+  max_active_runs: 1
+  tags: [sqlmesh]
+  default_args:
+    owner: data-platform
+    retries: 2
+    retry_delay_minutes: 5
+  recovery:
+    mode: bounded_auto
+    max_intervals: 6
+
+generation:
+  # Plan/apply belongs on its own deploy DAG (see examples/9_maintenance_dag.py).
+  auto_replan_on_change: false
+  include_source_tables: true
+  skip_if_not_due: true
+  # Recommended once every model has its own Airflow task:
+  no_auto_upstream: true
+  # Publish an Airflow Dataset per model so other DAGs can react to fresh data.
+  emit_datasets: true
+  # Run each model's audits in their own task, gating the children (like `dbt build`).
+  audit_tasks: false
+  task_overrides:
+    - select: ["tag:heavy"]
+      pool: heavy_pool
+      execution_timeout_minutes: 120
+      retries: 1
+    - select: ["interval:FIVE_MINUTE"]
+      priority_weight: 10
+
+# Reusable named selections (the dbt selectors.yml idea).
+selectors:
+  finance_core:
+    description: Finance models and everything downstream, minus deprecated ones
+    union: ["tag:finance+"]
+    exclude: ["tag:deprecated"]
+  gold_layer: "path:models/marts"
+
+dag_groups:
+  - dag_id: dwh_finance
+    select: ["selector:finance_core"]
+    schedule: "*/15 * * * *"
+    tags: [sqlmesh, finance, oncall]
+
+  - dag_id: dwh_marketing
+    select: ["tag:marketing+"]
+    # No schedule: run when the upstream models this group reads are fresh.
+    wait_for_upstream: dataset
+    default_args:
+      owner: marketing-analytics
+      retries: 0
+
+  - dag_id: dwh_slow_reporting
+    select: ["selector:gold_layer", "tag:reporting"]
+    exclude: ["tag:finance"]
+    schedule: "@daily"
+    generation_overrides:
+      skip_if_not_due: false

@@ -1,6 +1,6 @@
 """Tests for per-model DAG trigger resolution."""
 
-from sqlmesh_dag_generator.config import GenerationConfig, DAGGeneratorConfig
+from sqlmesh_dag_generator.config import DAGGeneratorConfig, GenerationConfig
 from sqlmesh_dag_generator.triggers import (
     ModelTriggerConfig,
     default_trigger_conf,
@@ -12,9 +12,7 @@ from sqlmesh_dag_generator.triggers import (
 
 
 def test_parse_trigger_from_tags_basic():
-    cfg = parse_trigger_from_tags(
-        ["rt", "flink", "trigger_dag:etl_rt_fraud_da_unload"]
-    )
+    cfg = parse_trigger_from_tags(["rt", "flink", "trigger_dag:etl_rt_fraud_da_unload"])
     assert cfg is not None
     assert cfg.dag_id == "etl_rt_fraud_da_unload"
     assert cfg.conf == {}

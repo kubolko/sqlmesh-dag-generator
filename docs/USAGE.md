@@ -33,12 +33,12 @@ generation:
 
 Or kwargs: `SQLMeshDAGGenerator(..., model_triggers={"dwh.rt_fraud_da_set": "etl_rt_fraud_da_unload"})`.
 
-**Priority:** explicit `model_triggers` > tags.  
+**Priority:** explicit `model_triggers` > tags.
 **Pipeline-level** `trigger_dag_id` still runs after all leaf models (optional, separate).
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Simplest Usage (Dynamic Mode - Default)
 
@@ -66,7 +66,7 @@ with open("my_pipeline.py", "w") as f:
 
 ---
 
-## 📋 Configuration
+## Configuration
 
 ### Using Config File (Recommended for Production)
 
@@ -101,9 +101,9 @@ dag_code = generator.generate_dynamic_dag()
 
 ---
 
-## 🔄 Generation Modes
+## Generation Modes
 
-### Dynamic Mode (Default) ✨
+### Dynamic Mode (Default)
 
 **Fire and forget!** Place DAG once, it auto-discovers models at runtime.
 
@@ -112,9 +112,9 @@ dag_code = generator.generate_dynamic_dag()
 ```
 
 **Benefits:**
-- ✅ No regeneration needed when models change
-- ✅ Uses Airflow Variables for multi-environment
-- ✅ Always in sync with SQLMesh project
+- No regeneration needed when models change
+- Uses Airflow Variables for multi-environment
+- Always in sync with SQLMesh project
 
 **When to use:** Most use cases (recommended default)
 
@@ -127,16 +127,16 @@ dag_code = generator.generate_dag()  # Static mode
 ```
 
 **Benefits:**
-- ✅ Full control over generated code
-- ✅ Faster DAG parse time
+- Full control over generated code
+- Faster DAG parse time
 
 **When to use:** When you need to customize generated code or have very stable pipelines
 
-See [Dynamic DAGs Documentation](DYNAMIC_DAGS.md) for details.
+See the [quick start](QUICKSTART.md) for a walkthrough of both modes.
 
 ---
 
-## 🌍 Multi-Environment Support
+## Multi-Environment Support
 
 ### Using Airflow Variables
 
@@ -152,7 +152,7 @@ The generated dynamic DAG automatically uses these, allowing the same DAG file t
 
 ---
 
-## 🎯 What You Get
+## What You Get
 
 ### Input (Your SQLMesh Project):
 ```
@@ -165,16 +165,16 @@ models/
 ### Output (Airflow DAG):
 ```
 Airflow Graph View:
-  [sqlmesh_raw_orders] → [sqlmesh_stg_orders] → [sqlmesh_orders_summary]
+  [sqlmesh_raw_orders] [sqlmesh_stg_orders] [sqlmesh_orders_summary]
 ```
 
-- ✅ One Airflow task per SQLMesh model
-- ✅ Dependencies match SQLMesh lineage
-- ✅ Full data lineage visible in Airflow UI
+- One Airflow task per SQLMesh model
+- Dependencies match SQLMesh lineage
+- Full data lineage visible in Airflow UI
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### "Failed to load SQLMesh context"
 
@@ -217,10 +217,10 @@ ast.parse(dag_code)  # Will raise SyntaxError if invalid
 
 ---
 
-## 📚 See Also
+## See Also
 
 - [Quick Start Guide](QUICKSTART.md) - Step-by-step tutorial
-- [Dynamic DAGs](DYNAMIC_DAGS.md) - Deep dive into dynamic mode
+- [Model selection](SELECTION.md) - Choosing which models a DAG runs
 - [Examples](../examples/) - Code examples
 - [Contributing](../CONTRIBUTING.md) - How to contribute
 
