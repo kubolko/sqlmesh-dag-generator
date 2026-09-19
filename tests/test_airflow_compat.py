@@ -1,9 +1,6 @@
 """
 Tests for Airflow 2 / 3 compatibility shims.
 """
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestDagScheduleKwargs:
@@ -23,6 +20,7 @@ class TestDagScheduleKwargs:
 class TestIsAirflow3:
     def test_detects_major_version(self):
         import airflow
+
         from sqlmesh_dag_generator.airflow_compat import is_airflow_3
 
         major = str(getattr(airflow, "__version__", "0")).split(".", 1)[0]

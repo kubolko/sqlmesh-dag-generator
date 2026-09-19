@@ -1,4 +1,5 @@
 """Tests for SQLMesh version compatibility helpers."""
+
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ class TestNormalizeDependsOn:
     def test_mixed_and_empty(self):
         assert normalize_depends_on(None) == set()
         assert normalize_depends_on([]) == set()
+
         class Dep:
             name = "n.m"
 

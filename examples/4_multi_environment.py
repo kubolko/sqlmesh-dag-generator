@@ -12,8 +12,10 @@ Key Points:
 """
 
 from datetime import datetime
+
 from airflow import DAG
 from airflow.models import Variable
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 
 # ==============================================================================
@@ -35,8 +37,7 @@ from sqlmesh_dag_generator import SQLMeshDAGGenerator
 
 # Get SQLMesh project path from Airflow Variables
 SQLMESH_PROJECT = Variable.get(
-    "sqlmesh_project_path",
-    default_var="/opt/airflow/core/sqlmesh_project"
+    "sqlmesh_project_path", default_var="/opt/airflow/core/sqlmesh_project"
 )
 
 # Gateway controls which environment (docker_local, dev, staging, prod)
@@ -59,7 +60,7 @@ with DAG(
     # Create the generator - gateway determines which environment
     generator = SQLMeshDAGGenerator(
         sqlmesh_project_path=SQLMESH_PROJECT,
-        gateway=GATEWAY,  # ✅ This is what matters!
+        gateway=GATEWAY,  # This is what matters!
         # Note: 'environment' parameter is deprecated/not used
     )
 
@@ -82,7 +83,7 @@ with DAG(
 # project: my_dwh
 #
 # state_connection:
-#   type: postgres
+# type: postgres
 #   host: "{{ env_var('POSTGRES_HOST') }}"
 #   port: 5432
 #   user: "{{ env_var('POSTGRES_USER') }}"
@@ -92,15 +93,15 @@ with DAG(
 # gateways:
 #   docker_local:
 #     connection:
-#       type: duckdb
+# type: duckdb
 #       database: ":memory:"
 #     state_connection:
-#       type: duckdb
+# type: duckdb
 #       database: .sqlmesh/state.db
 #
 #   dev:
 #     connection:
-#       type: redshift
+# type: redshift
 #       host: "{{ env_var('REDSHIFT_DEV_HOST') }}"
 #       port: 5439
 #       user: "{{ env_var('REDSHIFT_USER') }}"
@@ -109,7 +110,7 @@ with DAG(
 #
 #   staging:
 #     connection:
-#       type: redshift
+# type: redshift
 #       host: "{{ env_var('REDSHIFT_STAGING_HOST') }}"
 #       port: 5439
 #       user: "{{ env_var('REDSHIFT_USER') }}"
@@ -118,7 +119,7 @@ with DAG(
 #
 #   prod:
 #     connection:
-#       type: redshift
+# type: redshift
 #       host: "{{ env_var('REDSHIFT_PROD_HOST') }}"
 #       port: 5439
 #       user: "{{ env_var('REDSHIFT_USER') }}"
@@ -155,6 +156,5 @@ with DAG(
 # Production:
 #   airflow variables set sqlmesh_gateway "prod"
 #
-# The same DAG file works in all environments! 🎉
+# The same DAG file works in all environments!
 # ==============================================================================
-

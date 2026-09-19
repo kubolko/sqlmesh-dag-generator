@@ -1,413 +1,262 @@
 # SQLMesh DAG Generator
 
-Generate Apache Airflow DAGs from SQLMesh projects - **no cloud dependencies required**.
-
-Transform your SQLMesh models into production-ready Airflow DAGs with **full data lineage**, automatically!
-
-## ✨ Key Features
-
-- 🔥 **Dynamic DAG Generation (Default)**: Fire-and-forget - place DAG once, auto-discovers models at runtime
-- 📅 **Auto-Scheduling**: Automatically detects DAG schedule from SQLMesh model intervals - no manual configuration!
-- 🔐 **Runtime Connection Parametrization**: Pass database credentials via Airflow Connections - no hardcoded secrets!
-- ✅ **Full Lineage in Airflow**: Each SQLMesh model = One Airflow task with proper dependencies
-- 🌍 **Multi-Environment Support**: Use Airflow Variables + SQLMesh gateways for dev/staging/prod
-- ⚡ **Incremental Models**: Proper handling with `data_interval_start/end`
-- 🩺 **Integrity Guardrails**: Warn when sub-hourly incremental models run with `catchup=False`, with optional bounded recovery helpers
-- 🎯 **Enhanced Error Handling**: SQLMesh-specific error messages in Airflow logs
-- 🛠️ **Dual Mode**: Dynamic (auto-discovery, default) or Static (full control)
-- 🚫 **No Vendor Lock-in**: Open source, no cloud dependencies
-
-## ⚠️ Important: Gateway vs Environment
-
-**SQLMesh uses "gateways" to switch between environments, NOT an "environment" parameter.**
+Run your SQLMesh project from Airflow, with one Airflow task per SQLMesh model and
+the real lineage between them. No Tobiko Cloud, no cloud dependency, no vendor lock-in.
 
 ```python
-# ❌ WRONG - environment parameter is deprecated
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/project",
-    environment="prod",  # This doesn't work!
-)
-
-# ✅ CORRECT - Use gateway to switch environments
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/project",
-    gateway="prod"  # This is how you select your environment!
-)
-```
-
-**See [Multi-Environment Configuration Guide](docs/MULTI_ENVIRONMENT.md) for complete setup instructions.**
-
-## 🚀 Quick Start (3 Steps)
-
-### 1. Install
-```bash
-pip install sqlmesh-dag-generator  # (when published)
-# OR
-git clone <repo> && cd SQLMeshDAGGenerator && pip install -e .
-```
-
-### 2. Generate DAG (Dynamic Mode - Default!)
-```python
-from sqlmesh_dag_generator import SQLMeshDAGGenerator
-
-# Point to your SQLMesh project
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/your/sqlmesh/project",
-    dag_id="my_pipeline",
-    schedule_interval="@daily"
-)
-
-# Generate dynamic DAG (default - fire and forget!)
-dag_code = generator.generate_dynamic_dag()
-
-# Save it
-with open("my_pipeline.py", "w") as f:
-    f.write(dag_code)
-```
-
-### 3. Deploy to Airflow
-```bash
-cp my_pipeline.py /opt/airflow/dags/
-```
-
-**That's it! 🎉** Your SQLMesh models are now orchestrated by Airflow. The DAG will auto-discover models at runtime - no regeneration needed when models change!
-
-## Deploy Path vs Interval Run Path
-
-For large warehouses or alert-critical pipelines, **do not** run plan/apply on the same DAG as interval models.
-
-| DAG role | Setting | Task API |
-|----------|---------|----------|
-| **Hot path** (intervals only) | `auto_replan_on_change=False` | `create_tasks_in_dag(dag)` |
-| **Deploy path** (model changes) | manual/trigger schedule | `create_plan_apply_task(dag)` |
-
-```python
-# Interval/run DAG — never blocks on multi-hour plan/backfill
-generator = SQLMeshDAGGenerator(..., auto_replan_on_change=False)
-with DAG("dwh_sqlmesh_pipeline", ...) as dag:
-    generator.create_tasks_in_dag(dag)
-
-# Deploy DAG — plan+apply only
-deploy = SQLMeshDAGGenerator(..., auto_replan_on_change=False)
-with DAG("dwh_sqlmesh_deploy", schedule=None, ...) as dag:
-    deploy.create_plan_apply_task(dag)
-```
-
-`create_plan_apply_task` supports `dag_run.conf` overrides: `plan_only`, `skip_backfill`.
-
-## Recovery And Completeness
-
-SQLMesh DAG Generator forwards Airflow's `data_interval_start` and `data_interval_end` into `ctx.run(start=..., end=...)`.
-That means the package executes the interval Airflow gives it, but it does **not** invent missed Airflow runs on its own.
-
-If you run sub-hourly incremental models with `catchup=False`, outages can leave completeness gaps unless you replay the missed windows.
-
-The package now supports an explicit recovery policy:
-
-- `recovery_mode="disabled"`: no runtime recovery tasks are added.
-- `recovery_mode="warn"`: add an integrity guard task that detects missing intervals and logs them.
-- `recovery_mode="bounded_auto"` (default): add the same guard task plus a bounded recovery task that replays missing intervals when the gap is within `recovery_max_intervals`.
-
-Example:
-
-```python
-generator = SQLMeshDAGGenerator(
-  sqlmesh_project_path="/path/to/project",
-  dag_id="my_pipeline",
-  recovery_mode="bounded_auto",
-  recovery_max_intervals=6,
-)
-```
-
-When `recovery_mode` is enabled, the package adds stable helper tasks to the DAG instead of mutating the graph at runtime:
-
-- `sqlmesh_integrity_guard`
-- `sqlmesh_recovery_backfill` in `bounded_auto` mode
-
-This keeps recovery explicit and observable in Airflow while preserving the default "no surprise backfills" behavior.
-
-### Manual Backfill Task
-
-For larger historical gaps, the package also exposes a first-class manual backfill task helper.
-Use it in a separate unscheduled DAG and trigger it only when you need to replay a broader window:
-
-```python
-from datetime import datetime, timedelta
 from airflow import DAG
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 
 generator = SQLMeshDAGGenerator(
-  sqlmesh_project_path="/path/to/project",
-  dag_id="my_pipeline",
-  gateway="prod",
+    sqlmesh_project_path="/opt/airflow/sqlmesh_project",
+    gateway="prod",
 )
 
-with DAG(
-  dag_id="my_pipeline_manual_backfill",
-  schedule=None,
-  start_date=datetime(2024, 1, 1),
-  catchup=False,
-) as dag:
-  generator.create_manual_backfill_task(
-    dag,
-    default_start="2024-01-01T00:00:00",
-    execution_timeout=timedelta(hours=12),
-  )
+with DAG("dwh_sqlmesh", schedule=generator.get_recommended_schedule(), ...) as dag:
+    generator.create_tasks_in_dag(dag)
 ```
 
-The task reads optional `dag_run.conf` overrides:
-
-- `start`: ISO-8601 start boundary
-- `end`: ISO-8601 end boundary. If omitted, the task backfills up to the current UTC time.
-- `models`: one model name or a list of model names. If omitted, the task backfills all models.
-
-## 💡 What You Get
-
-### Your SQLMesh Project:
 ```
-my_project/
-└── models/
-    ├── raw_orders.sql
-    ├── stg_orders.sql      # depends on raw_orders
-    └── orders_summary.sql  # depends on stg_orders
+[raw_orders] -> [stg_orders] -> [orders_summary]
 ```
 
-### Generated Airflow DAG:
+Every model becomes a task, model dependencies become task dependencies, and the
+DAG schedule defaults to the shortest model interval in the project.
+
+## Why
+
+SQLMesh knows what needs to run and when. Airflow knows how to run things, retry
+them, alert on them and show them to whoever is on call. The gap between the two is
+usually a single `sqlmesh run` BashOperator - which works right up to the moment
+someone asks "which model failed?" or "why did the finance table not refresh?".
+
+This package closes that gap without giving up either side: SQLMesh still owns state,
+intervals and correctness; Airflow gets a graph it can actually show you.
+
+## Installation
+
+```bash
+pip install sqlmesh-dag-generator
 ```
-Airflow Graph View:
-  [raw_orders] → [stg_orders] → [orders_summary]
-  
-✅ Each model = separate task
-✅ SQLMesh dependencies = Airflow dependencies  
-✅ Full lineage visible in Airflow UI
-```
 
-## 📚 Documentation
+Requires Python 3.9+, SQLMesh 0.228+ (CI runs 0.236.2) and Airflow 2.4+ (Airflow 3 is
+supported through the compatibility layer in `sqlmesh_dag_generator.airflow_compat`).
 
-- **[Quick Start Guide](docs/QUICKSTART.md)** - Step-by-step tutorial (start here!)
-- **[Quick Reference](docs/QUICK_REFERENCE.md)** - One-page cheat sheet
-- **[Auto-Scheduling Guide](docs/AUTO_SCHEDULING.md)** - Automatic schedule detection 📅 NEW!
-- **[Runtime Configuration](docs/RUNTIME_CONFIGURATION.md)** - Pass credentials via Airflow Connections 🔐
-- **[Multi-Environment Setup](docs/MULTI_ENVIRONMENT.md)** - Configure for dev/staging/prod ⚠️ IMPORTANT
-- **[Migration Guide](docs/MIGRATION_GUIDE.md)** - Fix common configuration issues
-- **[Troubleshooting](docs/TROUBLESHOOTING.md)** - Common issues and solutions
-- **[Usage Guide](docs/USAGE.md)** - Complete reference
-- **[Dynamic DAGs](docs/DYNAMIC_DAGS.md)** - Fire-and-forget mode explained
-- **[Deployment Warnings](docs/DEPLOYMENT_WARNINGS.md)** - Critical production considerations
-- **[Examples](examples/)** - Code examples
-- **[Architecture](docs/ARCHITECTURE.md)** - Technical details
+## Gateways, not environments
 
-## 🔥 Why Dynamic Mode (Default)?
-
-**Dynamic mode** auto-discovers SQLMesh models at runtime:
+SQLMesh "environments" are virtual environments for testing changes. They are *not*
+how you switch between dev, staging and prod - that is what gateways are for:
 
 ```python
-dag_code = generator.generate_dynamic_dag()  # Default behavior!
+SQLMeshDAGGenerator(sqlmesh_project_path=..., gateway="prod")   # correct
+SQLMeshDAGGenerator(sqlmesh_project_path=..., environment="prod")  # creates a virtual env
 ```
 
-**Benefits:**
-- ✅ **No regeneration needed** when SQLMesh models change
-- ✅ **Always in sync** - DAG updates automatically
-- ✅ **Multi-environment** - Uses Airflow Variables
-- ✅ **Production-ready** - Enhanced error handling
+See [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md) for the full explanation.
 
-Want static mode instead? Just use `generator.generate_dag()` - see [Usage Guide](docs/USAGE.md).
+## Selecting models (dbt-style)
 
-## 🎯 Simple Example
-
-The simplest possible usage - just 3 lines of code:
+Instead of listing model names, describe the selection - the same way you would in
+`dbt ls --select`:
 
 ```python
-from sqlmesh_dag_generator import SQLMeshDAGGenerator
-
 generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/your/sqlmesh/project",
-    dag_id="my_pipeline"
+    sqlmesh_project_path="/opt/airflow/sqlmesh_project",
+    select=["tag:finance+"],        # finance models and everything downstream
+    exclude=["tag:deprecated"],
 )
-
-dag_code = generator.generate_dynamic_dag()
 ```
 
-See [examples/simple_generate.py](examples/simple_generate.py) for a complete runnable example.
+`tag:`, `path:`, `kind:`, `owner:`, `interval:`, `project:`, wildcards, `+`/`@` graph
+operators, unions and intersections are all supported, and named selectors can live in
+the config file. Full reference: [docs/SELECTION.md](docs/SELECTION.md).
 
-## 🤝 Contributing
+Check a selection before deploying it:
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+```bash
+sqlmesh-dag-gen -p /opt/airflow/sqlmesh_project --select "tag:finance+" --list-models
+```
 
-## 📄 License
+## One project, several DAGs
 
-[Your License Here]
-
----
-
-**Built with ❤️ for the data engineering community**
-
-### Configuration File
-
-Create a `dag_generator_config.yaml`:
+Finance runs every 15 minutes and pages the on-call. Marketing runs nightly. Same
+SQLMesh project, different operational reality - so give them different DAGs:
 
 ```yaml
-sqlmesh:
-  project_path: "/path/to/sqlmesh/project"
-  environment: "prod"
-  gateway: "local"
-
-airflow:
-  dag_id: "sqlmesh_pipeline"
-  schedule_interval: "0 0 * * *"
-  default_args:
-    owner: "data-team"
-    retries: 3
-    retry_delay_minutes: 5
-  tags:
-    - sqlmesh
-    - analytics
-
-generation:
-  output_dir: "/path/to/airflow/dags"
-  operator_type: "python"  # or "bash"
-  include_tests: true
-  parallel_tasks: true
+dag_groups:
+  - dag_id: dwh_finance
+    select: ["tag:finance+"]
+    schedule: "*/15 * * * *"
+  - dag_id: dwh_marketing
+    select: ["tag:marketing+"]
+    wait_for_upstream: dataset   # scheduled by the finance models it reads
 ```
-
-## How It Works
-
-1. **Load SQLMesh Project**: Reads your SQLMesh project configuration and models
-2. **Extract Dependencies**: Analyzes SQL queries to build dependency graph
-3. **Generate Tasks**: Creates Airflow tasks for each SQLMesh model
-4. **Set Dependencies**: Connects tasks based on model dependencies
-5. **Apply Schedules**: Preserves cron schedules and execution logic
-6. **Output DAG**: Generates Python file ready for Airflow
-
-## Architecture
-
-```
-SQLMesh Project
-    ↓
-SQLMeshDAGGenerator
-    ├── Context Loader (loads SQLMesh context)
-    ├── Model Parser (extracts model metadata)
-    ├── Dependency Resolver (builds dependency graph)
-    └── DAG Builder (generates Airflow DAG)
-    ↓
-Airflow DAG File
-```
-
-## Advanced Features
-
-### Custom Operators
 
 ```python
-from sqlmesh_dag_generator import SQLMeshDAGGenerator
-from airflow.operators.python import PythonOperator
+from sqlmesh_dag_generator import DAGGeneratorConfig, build_dag_groups
 
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/project",
-    custom_operator_class=PythonOperator,
-    operator_kwargs={"provide_context": True}
-)
+for dag_id, dag in build_dag_groups(DAGGeneratorConfig.from_file("config.yaml")).items():
+    globals()[dag_id] = dag
 ```
 
-### Model Filtering
+Cross-group edges become Airflow Datasets (or `ExternalTaskSensor`s), so lineage
+survives the split. Details: [docs/DAG_GROUPS.md](docs/DAG_GROUPS.md).
+
+## Deploy path vs interval path
+
+For large warehouses, do not run plan/apply on the DAG that runs intervals.
+
+| DAG role | Setting | Task API |
+|----------|---------|----------|
+| Hot path (intervals only) | `auto_replan_on_change=False` | `create_tasks_in_dag(dag)` |
+| Deploy path (model changes) | manual/triggered schedule | `create_plan_apply_task(dag)` |
 
 ```python
-# Generate DAG for specific models only
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/project",
-    include_models=["model1", "model2"],
-    exclude_models=["test_*"]
-)
+# Interval DAG - never blocks on a multi-hour backfill
+generator = SQLMeshDAGGenerator(..., auto_replan_on_change=False)
+with DAG("dwh_sqlmesh", ...) as dag:
+    generator.create_tasks_in_dag(dag)
+
+# Deploy DAG - plan + apply, gated by unit tests and the linter
+with DAG("dwh_sqlmesh_deploy", schedule=None, ...) as dag:
+    tests = generator.create_unit_test_task(dag)
+    lint = generator.create_lint_task(dag)
+    deploy = generator.create_plan_apply_task(dag)
+    [tests, lint] >> deploy
 ```
 
-### Dynamic Task Generation
+`create_plan_apply_task` accepts `dag_run.conf` overrides: `plan_only`, `skip_backfill`.
 
-```python
-# Generate tasks with dynamic parallelism
-generator = SQLMeshDAGGenerator(
-    sqlmesh_project_path="/path/to/project",
-    enable_dynamic_tasks=True,
-    max_parallel_tasks=10
-)
-```
+## Maintenance tasks
 
-## ⚠️ Important: Deployment Warnings
+| Task | What it runs |
+|------|--------------|
+| `create_unit_test_task` | `sqlmesh test` - unit tests before a deploy |
+| `create_lint_task` | the SQLMesh linter |
+| `create_audit_task` | `sqlmesh audit` for the DAG's interval |
+| `create_janitor_task` | `sqlmesh janitor` - expired environments and orphaned tables |
+| `create_restate_task` | restate a window of models (the `--full-refresh` equivalent) |
+| `create_manual_backfill_task` | replay a historical window on demand |
 
-### 🔴 Distributed Airflow Requires Shared Volume
+See [docs/MAINTENANCE_TASKS.md](docs/MAINTENANCE_TASKS.md).
 
-If you're using **KubernetesExecutor**, **CeleryExecutor**, or any distributed Airflow setup:
+## What ends up in the Airflow UI
 
-**Your SQLMesh project MUST be accessible to all workers!**
+Each model task carries the model's owner, description, kind, cron (with `cron_tz`),
+tags and audits as `doc_md`, so the task page answers "what is this?" without opening
+the repository. Turn it off with `model_docs=False`.
 
-**Solutions:**
-- **Option 1 (Recommended):** Mount project on shared volume (EFS/NFS/Filestore)
-- **Option 2:** Bake project into Docker image (loses fire-and-forget benefit)
+Per-selection task settings replace copy-pasted operator kwargs:
 
-**See full guide:** [docs/DEPLOYMENT_WARNINGS.md](docs/DEPLOYMENT_WARNINGS.md)
-
-### 🟡 Operator Type Limitations
-
-- **Dynamic Mode:** Python operator only (current limitation)
-- **Static Mode:** Supports Python, Bash, and Kubernetes operators
-
-For Bash/Kubernetes in dynamic mode, use static generation for now.
-
-### 🟢 Kubernetes Operator Support
-
-To use `operator_type: kubernetes`:
 ```yaml
 generation:
-  operator_type: kubernetes
-  docker_image: "your-registry/sqlmesh:v1.0"  # REQUIRED
-  namespace: "data-pipelines"
+  task_overrides:
+    - select: ["tag:heavy"]
+      pool: heavy_pool
+      execution_timeout_minutes: 120
+      retries: 1
 ```
 
-**📖 Full Documentation:** [docs/DEPLOYMENT_WARNINGS.md](docs/DEPLOYMENT_WARNINGS.md)
+## Upstream handling
 
-## Requirements
+Every model already has its own Airflow task, so SQLMesh does not need to pull
+upstream models in again:
 
-- Python >= 3.8
-- Apache Airflow >= 2.0
-- SQLMesh >= 0.20.0
+```yaml
+generation:
+  no_auto_upstream: true    # recommended; will become the default in 0.11.0
+```
+
+It is off by default in 0.10.0 so existing DAGs keep their current behaviour.
+
+## Recovery and completeness
+
+The package forwards Airflow's `data_interval_start` / `data_interval_end` into
+`ctx.run(start=..., end=...)`. It runs the interval Airflow gives it - it does not
+invent missed runs. With sub-hourly incremental models and `catchup=False`, an outage
+leaves gaps unless you replay them, so there is an explicit policy:
+
+- `recovery_mode="disabled"` - nothing is added.
+- `recovery_mode="warn"` - a guard task detects and logs missing intervals.
+- `recovery_mode="bounded_auto"` (default) - the guard plus a bounded replay task that
+  catches up when the gap is within `recovery_max_intervals`.
+
+```python
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/sqlmesh_project",
+    recovery_mode="bounded_auto",
+    recovery_max_intervals=6,
+)
+```
+
+For anything larger, use `create_manual_backfill_task` in a separate unscheduled DAG;
+it takes `start`, `end` and `models` from `dag_run.conf`.
+
+## Mixed cadences
+
+When a project mixes 5-minute and hourly models, the DAG ticks every 5 minutes and the
+hourly tasks would otherwise pay the full SQLMesh context load just to do nothing. With
+`skip_if_not_due` (default), a model that is not due returns
+`{"status": "skipped", "reason": "not_due"}` before loading the context. Models with a
+`cron_tz` are evaluated in their own timezone.
+
+## Downstream DAG triggers
+
+A model can trigger another DAG when it finishes - useful for unload or notification
+pipelines. Either from the model's own SQLMesh tags:
+
+```sql
+MODEL (
+  name dwh.fraud_scores,
+  tags (rt, 'trigger_dag:etl_fraud_unload', 'trigger_conf:source=sqlmesh')
+);
+```
+
+or from configuration (`generation.model_triggers`), which wins over tags.
+
+## Orchestration manifest
+
+```bash
+sqlmesh-dag-gen --config config.yaml --manifest target/orchestration.json
+```
+
+The manifest lists every model with its task id, schedule, lineage and dataset URI.
+`diff_manifests(old, new)` tells CI which Airflow tasks a pull request adds, removes or
+reschedules (a renamed task means Airflow loses that task's history).
+
+## Distributed Airflow
+
+With KubernetesExecutor, CeleryExecutor or any distributed setup, the SQLMesh project
+must be readable by every worker: mount it on a shared volume (EFS/NFS/Filestore), or
+bake it into the image and regenerate on deploy.
+
+## Documentation
+
+- [Quick start](docs/QUICKSTART.md)
+- [Quick reference](docs/QUICK_REFERENCE.md)
+- [Model selection](docs/SELECTION.md)
+- [DAG groups](docs/DAG_GROUPS.md)
+- [Maintenance tasks](docs/MAINTENANCE_TASKS.md)
+- [Auto-scheduling](docs/AUTO_SCHEDULING.md)
+- [Environments and gateways](docs/ENVIRONMENTS.md)
+- [Usage reference](docs/USAGE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Roadmap and ideas](docs/ROADMAP.md)
+- [Examples](examples/)
 
 ## Development
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/sqlmesh-dag-generator.git
-cd sqlmesh-dag-generator
-
-# Install in development mode
 pip install -e ".[dev]"
-
-# Run tests
 pytest
-
-# Run linter
-black .
-ruff check .
+ruff check sqlmesh_dag_generator tests
+black --check sqlmesh_dag_generator tests
 ```
 
 ## Contributing
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) for details.
+Bug reports and pull requests are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Comparison with Tobiko Cloud
-
-| Feature | Tobiko Cloud | SQLMesh DAG Generator |
-|---------|-------------|----------------------|
-| Cost | Paid | **Free & Open Source** |
-| Deployment | Cloud-based | **Self-hosted** |
-| Customization | Limited | **Fully Customizable** |
-| Privacy | External | **On-premise** |
-| Dependencies | Cloud connection | **None** |
-
-## Support
-
-- 📖 [Documentation](https://github.com/yourusername/sqlmesh-dag-generator/docs)
-- 🐛 [Issue Tracker](https://github.com/yourusername/sqlmesh-dag-generator/issues)
-- 💬 [Discussions](https://github.com/yourusername/sqlmesh-dag-generator/discussions)
-
+MIT, see [LICENSE](LICENSE).

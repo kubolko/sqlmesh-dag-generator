@@ -1,3 +1,62 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlmesh-dag-generator"
+version = "0.10.0"
+description = "Generate Airflow DAGs from SQLMesh projects, with model-level lineage and no cloud dependency"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "Jakub Sumionka", email = "jakub.sumionka@gmail.com" }]
+keywords = ["sqlmesh", "airflow", "dag", "orchestration", "etl", "data-engineering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Database",
+    "Framework :: Apache Airflow",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    # 0.228 is the oldest release the compat layer is tested against;
+    # 0.236.2 is what runs in CI.
+    "sqlmesh>=0.228.0",
+    "apache-airflow>=2.4.0",
+    "pyyaml>=5.4.0",
+    # Mixed-cadence skip_if_not_due; Airflow pulls it in too, but we use it directly.
+    "croniter>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+
+[project.scripts]
+sqlmesh-dag-gen = "sqlmesh_dag_generator.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/kubolko/sqlmesh-dag-generator"
+Source = "https://github.com/kubolko/sqlmesh-dag-generator"
+Issues = "https://github.com/kubolko/sqlmesh-dag-generator/issues"
+Changelog = "https://github.com/kubolko/sqlmesh-dag-generator/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+include = ["sqlmesh_dag_generator*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
@@ -9,7 +68,7 @@ addopts = [
     "--tb=short",
 ]
 filterwarnings = [
-    # Ignore third-party dependency warnings
+    # Third-party dependency noise
     "ignore::DeprecationWarning:astor",
     "ignore::DeprecationWarning:dateparser",
     "ignore:.*json_encoders.*:DeprecationWarning",
@@ -39,7 +98,7 @@ exclude_lines = [
 
 [tool.black]
 line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py39', 'py310', 'py311', 'py312']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -55,7 +114,9 @@ extend-exclude = '''
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -69,10 +130,20 @@ ignore = [
     "E501",  # line too long, handled by black
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
+    # The package still supports Python 3.9 and uses typing.Dict/Optional
+    # consistently; PEP 585/604 rewrites are a separate decision, not a lint error.
+    "UP006",
+    "UP007",
+    "UP035",
+    "UP045",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# The examples introduce imports where the narrative needs them, not at the top.
+"examples/*" = ["E402"]
+
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -82,4 +153,3 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
-

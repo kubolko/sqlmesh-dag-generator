@@ -1,9 +1,10 @@
 """
 Tests for models module
 """
+
 import pytest
-from sqlmesh_dag_generator.models import SQLMeshModelInfo, DAGStructure
-from sqlmesh_dag_generator.config import DAGGeneratorConfig, SQLMeshConfig, AirflowConfig
+
+from sqlmesh_dag_generator.models import DAGStructure, SQLMeshModelInfo
 
 
 def test_sqlmesh_model_info_task_id():
@@ -110,4 +111,3 @@ def test_dag_structure_validate_success():
     dag = DAGStructure(dag_id="test", models=models)
 
     assert dag.validate() is True
-

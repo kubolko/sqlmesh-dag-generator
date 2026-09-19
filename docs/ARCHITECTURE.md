@@ -1,6 +1,6 @@
 # Project Architecture
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 SQLMeshDAGGenerator/
@@ -20,12 +20,12 @@ SQLMeshDAGGenerator/
 ├── docs/                         # Documentation
 │   ├── QUICKSTART.md            # Getting started
 │   ├── USAGE.md                 # Usage guide
-│   └── DYNAMIC_DAGS.md          # Dynamic mode details
+│   └── SELECTION.md            # Model selection syntax
 ├── README.md                     # Package overview
 └── CONTRIBUTING.md               # Contribution guide
 ```
 
-## 🔧 Core Components
+## Core Components
 
 ### 1. SQLMeshDAGGenerator (`generator.py`)
 
@@ -59,7 +59,7 @@ Data models:
 - `SQLMeshModelInfo` - Represents a SQLMesh model
 - `DAGStructure` - Represents the complete DAG structure
 
-## 🔄 Generation Flow
+## Generation Flow
 
 ### Dynamic Mode (Default)
 
@@ -107,7 +107,7 @@ Data models:
    └─> Executes tasks using SQLMesh
 ```
 
-## 🎯 Key Design Decisions
+## Key Design Decisions
 
 ### 1. Dynamic Mode as Default
 
@@ -133,7 +133,7 @@ Data models:
 
 **Implementation:** Use `data_interval_start/end` (Airflow 2.2+) instead of deprecated `execution_date`.
 
-## 🧩 Extension Points
+## Extension Points
 
 ### Custom Operators
 
@@ -158,7 +158,7 @@ Future enhancement - group models into fewer tasks:
 task_grouping: str = "model"  # "model" | "domain" | "custom"
 ```
 
-## 📊 Dependencies
+## Dependencies
 
 ### Core:
 - `sqlmesh` - SQLMesh integration
@@ -168,7 +168,7 @@ task_grouping: str = "model"  # "model" | "domain" | "custom"
 ### Optional:
 - `apache-airflow` - For running generated DAGs (not required for generation)
 
-## 🔍 Testing Strategy
+## Testing Strategy
 
 - Unit tests for each component
 - Integration tests for full generation flow
@@ -176,7 +176,7 @@ task_grouping: str = "model"  # "model" | "domain" | "custom"
 
 See `tests/` directory for test suite.
 
-## 🚀 Performance Considerations
+## Performance Considerations
 
 ### DAG Parse Time
 
@@ -191,7 +191,7 @@ For 100+ models, consider:
 - Multiple DAGs (split by domain/tag)
 - Static mode (faster parse time)
 
-## 📝 Code Style
+## Code Style
 
 - PEP 8 compliance
 - Type hints throughout

@@ -1,14 +1,14 @@
 """
 Tests for auto-scheduling functionality
 """
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+
+from unittest.mock import MagicMock, Mock, patch
+
 from sqlmesh_dag_generator.generator import SQLMeshDAGGenerator
-from sqlmesh_dag_generator.config import SQLMeshConfig, AirflowConfig, GenerationConfig, DAGGeneratorConfig
 from sqlmesh_dag_generator.utils import (
-    interval_to_cron,
     get_interval_frequency_minutes,
     get_minimum_interval,
+    interval_to_cron,
 )
 
 
@@ -125,35 +125,28 @@ class TestMinimumInterval:
 class TestAutoScheduling:
     """Test auto-scheduling in SQLMeshDAGGenerator"""
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_auto_schedule_enabled_by_default(self, mock_context):
         """Test auto_schedule is True by default"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
-            dag_id="test_dag"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path="/test/path", dag_id="test_dag")
 
         assert generator.config.airflow.auto_schedule is True
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_auto_schedule_disabled_when_schedule_provided(self, mock_context):
         """Test auto_schedule is disabled when schedule_interval is provided"""
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
-            dag_id="test_dag",
-            schedule_interval="@hourly"
+            sqlmesh_project_path="/test/path", dag_id="test_dag", schedule_interval="@hourly"
         )
 
         assert generator.config.airflow.auto_schedule is False
         assert generator.config.airflow.schedule_interval == "@hourly"
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_get_recommended_schedule_with_models(self, mock_context):
         """Test get_recommended_schedule analyzes models"""
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
-            dag_id="test_dag",
-            auto_schedule=True
+            sqlmesh_project_path="/test/path", dag_id="test_dag", auto_schedule=True
         )
 
         # Mock the models
@@ -166,15 +159,10 @@ class TestAutoScheduling:
         mock_model_2.interval_unit.__str__ = Mock(return_value="IntervalUnit.DAY")
 
         from sqlmesh_dag_generator.models import SQLMeshModelInfo
+
         generator.models = {
-            "model1": SQLMeshModelInfo(
-                name="model1",
-                interval_unit=mock_model_1.interval_unit
-            ),
-            "model2": SQLMeshModelInfo(
-                name="model2",
-                interval_unit=mock_model_2.interval_unit
-            ),
+            "model1": SQLMeshModelInfo(name="model1", interval_unit=mock_model_1.interval_unit),
+            "model2": SQLMeshModelInfo(name="model2", interval_unit=mock_model_2.interval_unit),
         }
 
         recommended = generator.get_recommended_schedule()
@@ -182,25 +170,20 @@ class TestAutoScheduling:
         # Should recommend hourly (the more frequent interval)
         assert recommended == "@hourly"
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_get_recommended_schedule_returns_manual_schedule(self, mock_context):
         """Test get_recommended_schedule returns manual schedule if set"""
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
-            dag_id="test_dag",
-            schedule_interval="@daily"
+            sqlmesh_project_path="/test/path", dag_id="test_dag", schedule_interval="@daily"
         )
 
         recommended = generator.get_recommended_schedule()
         assert recommended == "@daily"
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_get_model_intervals_summary(self, mock_context):
         """Test get_model_intervals_summary groups models by interval"""
-        generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path="/test/path",
-            dag_id="test_dag"
-        )
+        generator = SQLMeshDAGGenerator(sqlmesh_project_path="/test/path", dag_id="test_dag")
 
         # Mock models with different intervals
         hour_interval = Mock()
@@ -210,6 +193,7 @@ class TestAutoScheduling:
         day_interval.__str__ = Mock(return_value="IntervalUnit.DAY")
 
         from sqlmesh_dag_generator.models import SQLMeshModelInfo
+
         generator.models = {
             "model1": SQLMeshModelInfo(name="model1", interval_unit=hour_interval),
             "model2": SQLMeshModelInfo(name="model2", interval_unit=hour_interval),
@@ -236,7 +220,7 @@ class TestAutoScheduling:
 class TestAutoScheduleIntegration:
     """Integration tests for auto-scheduling"""
 
-    @patch('sqlmesh_dag_generator.generator.Context')
+    @patch("sqlmesh_dag_generator.generator.Context")
     def test_full_workflow_with_auto_schedule(self, mock_context, tmp_path):
         """Test complete workflow with auto-scheduling"""
         # Setup mock context
@@ -272,9 +256,7 @@ class TestAutoScheduleIntegration:
 
         # Create generator with auto_schedule
         generator = SQLMeshDAGGenerator(
-            sqlmesh_project_path=str(tmp_path),
-            dag_id="test_dag",
-            auto_schedule=True
+            sqlmesh_project_path=str(tmp_path), dag_id="test_dag", auto_schedule=True
         )
 
         # Load models
@@ -291,4 +273,3 @@ class TestAutoScheduleIntegration:
         summary = generator.get_model_intervals_summary()
         assert "IntervalUnit.FIVE_MINUTE" in summary
         assert "test_model" in summary["IntervalUnit.FIVE_MINUTE"]
-

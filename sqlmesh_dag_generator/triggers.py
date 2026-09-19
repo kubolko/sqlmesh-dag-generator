@@ -22,7 +22,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-
 TRIGGER_DAG_TAG_PREFIX = "trigger_dag:"
 TRIGGER_CONF_TAG_PREFIX = "trigger_conf:"
 
@@ -141,9 +140,7 @@ def resolve_model_trigger(
 
 def trigger_task_id(dag_id: str, model_task_id: str) -> str:
     """Stable Airflow task_id for a per-model trigger operator."""
-    safe_dag = (
-        dag_id.replace(".", "_").replace("-", "_").replace(" ", "_").strip("_")
-    )
+    safe_dag = dag_id.replace(".", "_").replace("-", "_").replace(" ", "_").strip("_")
     base = f"trigger_{safe_dag}__after_{model_task_id}"
     if len(base) <= 200:
         return base

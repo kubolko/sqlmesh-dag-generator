@@ -12,7 +12,7 @@ backward compatibility; only the Airflow ``DAG(...)`` kwarg uses ``schedule``.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # Operators
@@ -66,11 +66,56 @@ except ImportError:  # pragma: no cover
     from airflow.models import Variable  # type: ignore  # Airflow 2
 
 
-def dag_schedule_kwargs(schedule: Optional[str]) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Datasets (Airflow 2.4+) / Assets (Airflow 3) and cross-DAG sensors
+# ---------------------------------------------------------------------------
+
+try:
+    from airflow.sdk import Asset as Dataset  # Airflow 3 renamed Dataset -> Asset
+except ImportError:  # pragma: no cover
+    try:
+        from airflow.datasets import Dataset  # type: ignore  # Airflow 2.4+
+    except ImportError:  # pragma: no cover
+        Dataset = None  # type: ignore  # Airflow < 2.4
+
+try:
+    from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
+except ImportError:  # pragma: no cover
+    try:
+        from airflow.sensors.external_task import ExternalTaskSensor  # type: ignore
+    except ImportError:  # pragma: no cover
+        ExternalTaskSensor = None  # type: ignore
+
+
+def supports_datasets() -> bool:
+    """True when this Airflow can express dataset/asset dependencies."""
+    return Dataset is not None
+
+
+def make_dataset(uri: str):
+    """
+    Build a Dataset (AF2) / Asset (AF3) for a model.
+
+    Airflow 3 requires assets to have a name, and accepts ``name=`` as the first
+    positional argument, so pass the URI explicitly for both generations.
+    """
+    if Dataset is None:  # pragma: no cover - guarded by supports_datasets()
+        raise RuntimeError(
+            "This Airflow version has no Dataset/Asset support "
+            "(needs Airflow 2.4+). Set generation.emit_datasets=false."
+        )
+    try:
+        return Dataset(uri=uri, name=uri)  # Airflow 3 (Asset)
+    except TypeError:  # pragma: no cover - Airflow 2 Dataset has no name kwarg
+        return Dataset(uri=uri)
+
+
+def dag_schedule_kwargs(schedule: Any) -> Dict[str, Any]:
     """
     Build kwargs for ``DAG(...)`` that work on Airflow 2.4+ and Airflow 3.
 
-    Always uses ``schedule=`` (supported since AF 2.4; required on AF 3).
+    Always uses ``schedule=`` (supported since AF 2.4; required on AF 3), which
+    also accepts a list of Datasets/Assets for data-aware scheduling.
     Do not emit ``schedule_interval=`` — removed in Airflow 3.
     """
     return {"schedule": schedule}
@@ -92,8 +137,12 @@ __all__ = [
     "EmptyOperator",
     "BashOperator",
     "TriggerDagRunOperator",
+    "ExternalTaskSensor",
     "BaseHook",
+    "Dataset",
     "Variable",
     "dag_schedule_kwargs",
     "is_airflow_3",
+    "make_dataset",
+    "supports_datasets",
 ]

@@ -15,14 +15,14 @@ from sqlmesh_dag_generator import SQLMeshDAGGenerator
 # Configuration
 # ============================================================================
 
-SQLMESH_PROJECT_PATH = "/path/to/your/sqlmesh/project"  # ⚠️ UPDATE THIS
+SQLMESH_PROJECT_PATH = "/path/to/your/sqlmesh/project"  # UPDATE THIS
 DAG_ID = "my_sqlmesh_pipeline"
 
 # ============================================================================
 # Generate DAG
 # ============================================================================
 
-print("🚀 Generating Airflow DAG from SQLMesh project...")
+print("Generating Airflow DAG from SQLMesh project...")
 
 # Create generator
 generator = SQLMeshDAGGenerator(
@@ -38,11 +38,10 @@ output_file = f"{DAG_ID}.py"
 with open(output_file, "w") as f:
     f.write(dag_code)
 
-print(f"✅ DAG generated: {output_file}")
-print(f"📊 Models discovered: {len(generator.models)}")
+print(f"DAG generated: {output_file}")
+print(f"Models discovered: {len(generator.models)}")
 print()
-print("📋 Next steps:")
+print("Next steps:")
 print(f"   1. Review: cat {output_file}")
 print(f"   2. Deploy: cp {output_file} /opt/airflow/dags/")
-print(f"   3. The DAG will auto-discover models at runtime!")
-
+print("   3. The DAG will auto-discover models at runtime!")

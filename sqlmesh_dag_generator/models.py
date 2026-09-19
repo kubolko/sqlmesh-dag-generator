@@ -1,8 +1,10 @@
 """
 Data models for SQLMesh DAG Generator
 """
+
 from dataclasses import dataclass, field
-from typing import Dict, List, Set, Optional, Any
+from typing import Any, Dict, List, Optional, Set
+
 from sqlmesh.core.model import Model
 
 
@@ -10,7 +12,13 @@ from sqlmesh.core.model import Model
 class SQLMeshModelInfo:
     """
     Information extracted from a SQLMesh model.
+
+    ``name`` is the key SQLMesh uses in ``Context.models`` - usually the quoted
+    FQN (``"catalog"."schema"."table"``). ``display_name`` is the unquoted name
+    people write in the MODEL block (``schema.table``); selection and Airflow
+    docs use it because it is what anyone reading the DAG expects to see.
     """
+
     name: str
     dependencies: Set[str] = field(default_factory=set)
     cron: Optional[str] = None
@@ -20,16 +28,26 @@ class SQLMeshModelInfo:
     tags: List[str] = field(default_factory=list)
     description: Optional[str] = None
     model: Optional[Model] = None
+    display_name: Optional[str] = None
+    path: Optional[str] = None  # model file, relative to the project root
+    cron_tz: Optional[str] = None  # IANA zone name when the model sets cron_tz
+    project: Optional[str] = None  # SQLMesh multi-repo project name
+    audits: List[str] = field(default_factory=list)  # audit names attached to the model
+
+    def __post_init__(self) -> None:
+        if not self.display_name:
+            self.display_name = self.name.replace('"', "")
 
     def get_task_id(self) -> str:
         """Generate Airflow task ID from model name"""
         # Replace dots, quotes, and special characters with underscores
-        task_id = (self.name
-                   .replace('"', '')
-                   .replace("'", '')
-                   .replace(".", "_")
-                   .replace("-", "_")
-                   .replace(" ", "_"))
+        task_id = (
+            self.name.replace('"', "")
+            .replace("'", "")
+            .replace(".", "_")
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         # Remove any consecutive underscores
         while "__" in task_id:
             task_id = task_id.replace("__", "_")
@@ -43,10 +61,7 @@ class SQLMeshModelInfo:
 
     def get_upstream_task_ids(self) -> List[str]:
         """Get list of upstream task IDs"""
-        return [
-            dep.replace(".", "_").replace("-", "_")
-            for dep in self.dependencies
-        ]
+        return [dep.replace(".", "_").replace("-", "_") for dep in self.dependencies]
 
 
 @dataclass
@@ -54,6 +69,7 @@ class DAGStructure:
     """
     Structure representing the complete DAG.
     """
+
     dag_id: str
     models: Dict[str, SQLMeshModelInfo]
     config: Any = None  # DAGGeneratorConfig
@@ -122,14 +138,12 @@ class DAGStructure:
         for name, model_info in self.models.items():
             for dep in model_info.dependencies:
                 if dep not in all_model_names:
-                    raise ValueError(
-                        f"Model '{name}' depends on '{dep}' which does not exist"
-                    )
+                    raise ValueError(f"Model '{name}' depends on '{dep}' which does not exist")
 
         # Check for circular dependencies
         try:
             self.topological_sort()
         except ValueError as e:
-            raise ValueError(f"DAG validation failed: {e}")
+            raise ValueError(f"DAG validation failed: {e}") from e
 
         return True

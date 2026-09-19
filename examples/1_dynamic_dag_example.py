@@ -11,12 +11,14 @@ This example shows a production-ready SQLMesh DAG with:
 Copy this to Airflow's dags/ folder for production use.
 """
 
+import logging
 from datetime import datetime, timedelta
+
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.empty import EmptyOperator
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Required: SQLMesh project configuration
 SQLMESH_PROJECT = Variable.get(
-    "sqlmesh_project_path",
-    default_var="/path/to/your/sqlmesh/project"  # ⚠️ UPDATE DEFAULT
+    "sqlmesh_project_path", default_var="/path/to/your/sqlmesh/project"  # UPDATE DEFAULT
 )
 
 # Optional: Environment and gateway settings
@@ -86,8 +87,7 @@ with DAG(
 
     # Set up start/end dependencies
     # Find root tasks (tasks with no dependencies)
-    root_tasks = [t for name, t in tasks.items()
-                  if not generator.models[name].dependencies]
+    root_tasks = [t for name, t in tasks.items() if not generator.models[name].dependencies]
 
     # Find leaf tasks (tasks with no dependents)
     all_deps = set()
@@ -100,5 +100,3 @@ with DAG(
         start >> root_tasks
     if leaf_tasks:
         leaf_tasks >> end
-
-

@@ -1,7 +1,6 @@
-# Tested with sqlmesh 0.228.x (prod image) through 0.236.x (latest at 0.9.11)
+# Runtime dependencies. pyproject.toml is the source of truth for the package;
+# this file exists for Docker images and `pip install -r requirements.txt` setups.
 sqlmesh>=0.228.0
 apache-airflow>=2.4.0
 pyyaml>=5.4.0
-# Used for mixed-cadence skip_if_not_due (also pulled in by Airflow)
 croniter>=1.0.0
-

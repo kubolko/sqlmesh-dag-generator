@@ -44,7 +44,7 @@ def load_sqlmesh_config(config_path: Union[str, Path]):
     except Exception:
         pass
 
-    # YAML dict → Config (when given an explicit .yaml/.yml file)
+    # YAML dict -> Config (when given an explicit .yaml/.yml file)
     if path.is_file() and path.suffix in {".yaml", ".yml"}:
         try:
             from sqlmesh.core.config import load_config_from_yaml
@@ -126,8 +126,47 @@ def normalize_depends_on(depends_on: Optional[Iterable[Any]]) -> Set[str]:
     return out
 
 
+def normalize_cron_tz(cron_tz: Any) -> Optional[str]:
+    """
+    Return the IANA zone name of a model's ``cron_tz``, or None.
+
+    ``cron_tz`` was added in SQLMesh 0.235.4 and is a ``zoneinfo.ZoneInfo`` on
+    the model; older versions do not have the attribute at all.
+    """
+    if not cron_tz:
+        return None
+    key = getattr(cron_tz, "key", None)  # zoneinfo.ZoneInfo
+    if key:
+        return str(key)
+    zone = getattr(cron_tz, "zone", None)  # pytz
+    if zone:
+        return str(zone)
+    return str(cron_tz)
+
+
+def extract_audit_names(model: Any) -> list:
+    """
+    Names of the audits attached to a model.
+
+    SQLMesh stores them as ``[(name, args_dict), ...]``; some versions expose
+    plain strings or objects with a ``name``.
+    """
+    audits = getattr(model, "audits", None) or []
+    names = []
+    for audit in audits:
+        if isinstance(audit, str):
+            names.append(audit)
+        elif isinstance(audit, (tuple, list)) and audit:
+            names.append(str(audit[0]))
+        elif hasattr(audit, "name"):
+            names.append(str(audit.name))
+    return names
+
+
 __all__ = [
     "load_sqlmesh_config",
     "config_to_dict",
     "normalize_depends_on",
+    "normalize_cron_tz",
+    "extract_audit_names",
 ]

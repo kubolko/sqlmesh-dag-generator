@@ -6,14 +6,13 @@ or how to inspect the recommended schedule before using it.
 """
 
 from datetime import datetime
+
 from airflow import DAG
 from airflow.models import Variable
+
 from sqlmesh_dag_generator import SQLMeshDAGGenerator
 
-SQLMESH_PROJECT = Variable.get(
-    "sqlmesh_project_path",
-    default_var="/path/to/your/sqlmesh/project"
-)
+SQLMESH_PROJECT = Variable.get("sqlmesh_project_path", default_var="/path/to/your/sqlmesh/project")
 GATEWAY = Variable.get("sqlmesh_gateway", default_var="docker_local")
 
 # ========================================
@@ -29,15 +28,15 @@ generator = SQLMeshDAGGenerator(
 recommended = generator.get_recommended_schedule()
 intervals_summary = generator.get_model_intervals_summary()
 
-print(f"🔍 Recommended schedule: {recommended}")
-print(f"📊 Models by interval: {intervals_summary}")
+print(f"Recommended schedule: {recommended}")
+print(f"Models by interval: {intervals_summary}")
 
 # Decide whether to use it or override
 # For example, if you have 5-minute models but don't want to run that frequently:
 if recommended == "*/5 * * * *":
     # Override to run less frequently
     custom_schedule = "*/15 * * * *"
-    print(f"⚠️  Overriding {recommended} with {custom_schedule}")
+    print(f"Overriding {recommended} with {custom_schedule}")
 else:
     custom_schedule = recommended
 
@@ -80,7 +79,7 @@ generator_smart = SQLMeshDAGGenerator(
 recommended_schedule = generator_smart.get_recommended_schedule()
 
 # Don't run more frequently than every 10 minutes
-from sqlmesh_dag_generator.utils import get_interval_frequency_minutes
+
 
 # Simple mapping to estimate frequency from cron
 def cron_to_minutes(cron: str) -> int:
@@ -102,12 +101,13 @@ def cron_to_minutes(cron: str) -> int:
     else:
         return 1440  # Default to daily if unknown
 
+
 freq_minutes = cron_to_minutes(recommended_schedule)
 MINIMUM_FREQUENCY_MINUTES = 10
 
 if freq_minutes < MINIMUM_FREQUENCY_MINUTES:
     smart_schedule = "*/10 * * * *"
-    print(f"⚙️  Throttling {recommended_schedule} to {smart_schedule}")
+    print(f"Throttling {recommended_schedule} to {smart_schedule}")
 else:
     smart_schedule = recommended_schedule
 
@@ -118,4 +118,3 @@ with DAG(
     catchup=False,
 ) as dag3:
     generator_smart.create_tasks_in_dag(dag3)
-
