@@ -6,12 +6,41 @@ on:
   pull_request:
 
 jobs:
+  # Formatting is checked on one interpreter on purpose: black's output depends
+  # on the Python it runs under, so a matrix would disagree with itself.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install linters
+        run: pip install ruff black
+
+      - name: Ruff
+        run: ruff check sqlmesh_dag_generator tests scripts examples
+
+      - name: Black
+        run: black --check sqlmesh_dag_generator tests scripts examples
+
   test:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.11", "3.12"]
+        include:
+          - python-version: "3.9"
+          - python-version: "3.11"
+          - python-version: "3.12"
+          # The package supports Airflow 2 as well, and the compatibility layer
+          # is the whole reason it does - so pin one job to it.
+          - python-version: "3.11"
+            airflow-version: "2.11.0"
+    name: test (py${{ matrix.python-version }}${{ matrix.airflow-version && format(', airflow {0}', matrix.airflow-version) || '' }})
     steps:
       - uses: actions/checkout@v4
 
@@ -20,15 +49,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install Airflow ${{ matrix.airflow-version }}
+        if: matrix.airflow-version
+        run: |
+          pip install "apache-airflow==${{ matrix.airflow-version }}" \
+            --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-${{ matrix.airflow-version }}/constraints-${{ matrix.python-version }}.txt"
+
       - name: Install
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-
-      - name: Lint
-        run: |
-          ruff check sqlmesh_dag_generator tests scripts examples
-          black --check sqlmesh_dag_generator tests scripts examples
 
       - name: Test
         env:

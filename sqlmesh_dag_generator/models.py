@@ -8,6 +8,27 @@ from typing import Any, Dict, List, Optional, Set
 from sqlmesh.core.model import Model
 
 
+def model_task_id(model_name: str) -> str:
+    """
+    Airflow task id for a SQLMesh model name.
+
+    Kept as a module-level function because generated DAG files need exactly the
+    same rule: a task id that drifts between runtime mode and a generated file
+    silently orphans task history in Airflow.
+    """
+    task_id = (
+        str(model_name)
+        .replace('"', "")
+        .replace("'", "")
+        .replace(".", "_")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    while "__" in task_id:
+        task_id = task_id.replace("__", "_")
+    return f"sqlmesh_{task_id.strip('_')}"
+
+
 @dataclass
 class SQLMeshModelInfo:
     """
@@ -40,20 +61,7 @@ class SQLMeshModelInfo:
 
     def get_task_id(self) -> str:
         """Generate Airflow task ID from model name"""
-        # Replace dots, quotes, and special characters with underscores
-        task_id = (
-            self.name.replace('"', "")
-            .replace("'", "")
-            .replace(".", "_")
-            .replace("-", "_")
-            .replace(" ", "_")
-        )
-        # Remove any consecutive underscores
-        while "__" in task_id:
-            task_id = task_id.replace("__", "_")
-        # Remove leading/trailing underscores
-        task_id = task_id.strip("_")
-        return f"sqlmesh_{task_id}"
+        return model_task_id(self.name)
 
     def is_incremental(self) -> bool:
         """Check if this is an incremental model"""
