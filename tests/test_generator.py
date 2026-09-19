@@ -710,3 +710,24 @@ class TestIncrementalHandling:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+@pytest.mark.parametrize("mode", ["static", "dynamic"])
+def test_generated_dag_parses_on_the_oldest_supported_python(demo_sqlmesh_project, mode):
+    """
+    Generated DAG files must be valid on every Python the package supports.
+
+    The dynamic template used to emit an f-string with nested double quotes
+    (PEP 701), which only parses on Python 3.12+ - so a DAG generated on a 3.12
+    machine failed to import on an Airflow worker running 3.9.
+    """
+    import ast
+
+    generator = SQLMeshDAGGenerator(
+        sqlmesh_project_path=demo_sqlmesh_project,
+        dag_id=f"test_{mode}",
+        dry_run=True,
+    )
+    dag_code = generator.generate_dag() if mode == "static" else generator.generate_dynamic_dag()
+
+    ast.parse(dag_code, feature_version=(3, 9))

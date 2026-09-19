@@ -43,6 +43,8 @@ dev = [
     "mypy>=1.0.0",
     "build>=1.0.0",
     "twine>=4.0.0",
+    # the packaging test reads pyproject.toml; tomllib is stdlib only from 3.11
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.scripts]

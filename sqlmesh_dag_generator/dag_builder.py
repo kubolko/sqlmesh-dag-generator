@@ -534,6 +534,7 @@ DO NOT EDIT MANUALLY - changes will be overwritten.
             "    PythonOperator,",
             "    Variable,",
             ")",
+            "from sqlmesh_dag_generator.models import model_task_id",
             "",
             "from sqlmesh import Context",
             "from sqlmesh.utils.errors import SQLMeshError",
@@ -837,12 +838,8 @@ with DAG(
 
     # Create task for each discovered model
     for model_name, model_info in discovered_models.items():
-        # Sanitize task ID (remove quotes, dots, etc.)
-        task_id = f"sqlmesh_{{model_name.replace('.', '_').replace('"', '').replace("'", '').replace(' ', '_')}}"
-        # Remove consecutive underscores
-        while "__" in task_id:
-            task_id = task_id.replace("__", "_")
-        task_id = task_id.strip("_")
+        # Same rule as runtime mode, so task ids (and their history) match.
+        task_id = model_task_id(model_name)
 
         # Create callable for this model
         def make_callable(
