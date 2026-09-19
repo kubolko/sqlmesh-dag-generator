@@ -1,4 +1,5 @@
 """Tests for mixed-cadence skip_if_not_due helpers."""
+
 from datetime import datetime, timezone
 
 from sqlmesh_dag_generator.config import GenerationConfig
@@ -85,3 +86,54 @@ def test_not_due_skip_result_shape():
     assert payload["reason"] == "not_due"
     assert payload["model"] == "db.schema.model"
     assert payload["cron"] == "0 * * * *"
+
+
+def test_cron_tz_shifts_the_due_check():
+    """A model with cron_tz fires on *local* midnight, not UTC midnight."""
+    # Europe/Warsaw is UTC+2 in summer, so local midnight is 22:00 UTC.
+    assert (
+        should_skip_model_for_tick(
+            cron_expr="@daily",
+            model_interval_minutes=1440,
+            dag_tick_minutes=60,
+            data_interval_end=datetime(2024, 7, 1, 22, 0, tzinfo=timezone.utc),
+            cron_tz="Europe/Warsaw",
+        )
+        is False
+    )
+    # ... and UTC midnight is 02:00 local, which is not a fire time
+    assert (
+        should_skip_model_for_tick(
+            cron_expr="@daily",
+            model_interval_minutes=1440,
+            dag_tick_minutes=60,
+            data_interval_end=datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc),
+            cron_tz="Europe/Warsaw",
+        )
+        is True
+    )
+
+
+def test_cron_tz_without_cron_uses_the_interval_boundaries():
+    assert (
+        should_skip_model_for_tick(
+            model_interval_minutes=1440,
+            dag_tick_minutes=60,
+            data_interval_end=datetime(2024, 7, 1, 22, 0, tzinfo=timezone.utc),
+            cron_tz="Europe/Warsaw",
+        )
+        is False
+    )
+
+
+def test_unknown_cron_tz_falls_back_to_utc(caplog):
+    with caplog.at_level("WARNING"):
+        skipped = should_skip_model_for_tick(
+            cron_expr="@daily",
+            model_interval_minutes=1440,
+            dag_tick_minutes=60,
+            data_interval_end=datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc),
+            cron_tz="Mars/Olympus_Mons",
+        )
+    assert skipped is False
+    assert "Unknown cron_tz" in caplog.text

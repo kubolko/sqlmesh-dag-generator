@@ -1,12 +1,10 @@
-# Contributor Covenant Code of Conduct
+# Code of Conduct
 
-## Our Pledge
-We pledge to make participation in our project a harassment-free experience for everyone.
+This project follows the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/),
+version 2.1.
 
-## Standards
-- Be respectful and inclusive
-- Accept constructive criticism
-- Focus on what's best for the community 
+In short: be respectful, assume good intent, and keep discussions about the code.
+Harassment of any kind is not welcome here.
 
-## Enforcement
-Instances of abusive behavior may be reported to the project maintainers.
+Report unacceptable behaviour to jakub.sumionka@gmail.com. Reports are handled
+privately, and the maintainer will respond as quickly as they can.

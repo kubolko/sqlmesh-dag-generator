@@ -1,13 +1,14 @@
 # Contributing to SQLMesh DAG Generator
 
-We love your input! We want to make contributing to SQLMesh DAG Generator as easy and transparent as possible.
+Bug reports, questions and pull requests are all welcome. The project is small, so
+there is no heavy process - open an issue if you are unsure whether a change fits.
 
 ## Development Setup
 
 1. **Fork and clone the repository**
 
 ```bash
-git clone https://github.com/yourusername/sqlmesh-dag-generator.git
+git clone https://github.com/kubolko/sqlmesh-dag-generator.git
 cd sqlmesh-dag-generator
 ```
 
@@ -138,14 +139,11 @@ We welcome feature requests! Please:
 
 ## Code of Conduct
 
-- Be respectful and inclusive
-- Accept constructive criticism gracefully
-- Focus on what is best for the community
-- Show empathy towards others
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Questions?
 
-Feel free to open an issue with the `question` label or reach out to the maintainers.
+Open an issue with the `question` label.
 
 ## License
 

@@ -3,8 +3,9 @@ Security utilities for sqlmesh-dag-generator
 
 Provides credential filtering and security best practices.
 """
-import re
+
 import logging
+import re
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
@@ -24,22 +25,20 @@ class CredentialFilter(logging.Filter):
 
     SENSITIVE_PATTERNS = [
         # Key-value patterns
-        (r'password["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'password=***REDACTED***'),
-        (r'passwd["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'passwd=***REDACTED***'),
-        (r'token["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'token=***REDACTED***'),
-        (r'secret["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'secret=***REDACTED***'),
-        (r'api[_-]?key["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'api_key=***REDACTED***'),
-        (r'access[_-]?key["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r'access_key=***REDACTED***'),
-
+        (r'password["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"password=***REDACTED***"),
+        (r'passwd["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"passwd=***REDACTED***"),
+        (r'token["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"token=***REDACTED***"),
+        (r'secret["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"secret=***REDACTED***"),
+        (r'api[_-]?key["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"api_key=***REDACTED***"),
+        (r'access[_-]?key["\']?\s*[:=]\s*["\']?([^"\'}\s,]+)', r"access_key=***REDACTED***"),
         # Database connection strings
-        (r'postgresql://[^:]+:([^@]+)@', r'postgresql://user:***REDACTED***@'),
-        (r'mysql://[^:]+:([^@]+)@', r'mysql://user:***REDACTED***@'),
-        (r'redshift://[^:]+:([^@]+)@', r'redshift://user:***REDACTED***@'),
-        (r'snowflake://[^:]+:([^@]+)@', r'snowflake://user:***REDACTED***@'),
-
+        (r"postgresql://[^:]+:([^@]+)@", r"postgresql://user:***REDACTED***@"),
+        (r"mysql://[^:]+:([^@]+)@", r"mysql://user:***REDACTED***@"),
+        (r"redshift://[^:]+:([^@]+)@", r"redshift://user:***REDACTED***@"),
+        (r"snowflake://[^:]+:([^@]+)@", r"snowflake://user:***REDACTED***@"),
         # AWS credentials
-        (r'(aws_secret_access_key\s*[:=]\s*)[^\s,}]+', r'\1***REDACTED***'),
-        (r'(AWS_SECRET_ACCESS_KEY\s*[:=]\s*)[^\s,}]+', r'\1***REDACTED***'),
+        (r"(aws_secret_access_key\s*[:=]\s*)[^\s,}]+", r"\1***REDACTED***"),
+        (r"(AWS_SECRET_ACCESS_KEY\s*[:=]\s*)[^\s,}]+", r"\1***REDACTED***"),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -66,28 +65,28 @@ def validate_connection_security(connection: Any) -> None:
         connection: Connection configuration (str, dict, or Connection object)
     """
     if isinstance(connection, dict):
-        sensitive_keys = {'password', 'passwd', 'token', 'secret', 'api_key', 'access_key'}
+        sensitive_keys = {"password", "passwd", "token", "secret", "api_key", "access_key"}
         found_sensitive = sensitive_keys & set(connection.keys())
 
         if found_sensitive:
             logger.warning(
-                "⚠️  SECURITY WARNING: Connection dict contains sensitive keys: %s\n"
+                "SECURITY WARNING: Connection dict contains sensitive keys: %s\n"
                 "   Credentials may appear in logs, config files, or error messages.\n"
                 "   \n"
                 "   RECOMMENDED: Use Airflow Connection ID instead:\n"
                 "   \n"
                 "   # Instead of this:\n"
                 "   generator = SQLMeshDAGGenerator(\n"
-                "       connection={'password': 'secret123'}  # ❌ Risky!\n"
+                "       connection={'password': 'secret123'}  # Risky!\n"
                 "   )\n"
                 "   \n"
                 "   # Do this:\n"
                 "   generator = SQLMeshDAGGenerator(\n"
-                "       connection='my_connection_id'  # ✅ Secure!\n"
+                "       connection='my_connection_id'  # Secure!\n"
                 "   )\n"
                 "   \n"
-                "   Create connection in Airflow UI: Admin → Connections → Add\n",
-                found_sensitive
+                "   Create connection in Airflow UI: Admin -> Connections -> Add\n",
+                found_sensitive,
             )
 
 
@@ -125,8 +124,16 @@ def scrub_dict(data: Dict[str, Any]) -> Dict[str, Any]:
         >>> scrub_dict(config)
         {"host": "db.example.com", "password": "***REDACTED***"}
     """
-    sensitive_keys = {'password', 'passwd', 'token', 'secret', 'api_key', 'access_key',
-                     'aws_secret_access_key', 'private_key'}
+    sensitive_keys = {
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "api_key",
+        "access_key",
+        "aws_secret_access_key",
+        "private_key",
+    }
 
     scrubbed = {}
     for key, value in data.items():
@@ -144,4 +151,3 @@ def scrub_dict(data: Dict[str, Any]) -> Dict[str, Any]:
             scrubbed[key] = value
 
     return scrubbed
-

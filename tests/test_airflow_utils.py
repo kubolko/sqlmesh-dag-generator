@@ -1,13 +1,14 @@
 """
 Tests for runtime connection configuration and Airflow utilities
 """
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+
+from unittest.mock import Mock, patch
+
 from sqlmesh_dag_generator.airflow_utils import (
-    resolve_credentials,
-    register_credential_resolver,
     CredentialResolver,
     _map_airflow_conn_type_to_sqlmesh,
+    register_credential_resolver,
+    resolve_credentials,
 )
 
 
@@ -42,7 +43,7 @@ class TestConnectionTypeMapping:
 class TestResolveCredentials:
     """Test the new resolve_credentials API"""
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_resolve_from_connection_object(self, mock_hook):
         """Test resolving from Airflow Connection object directly"""
         mock_conn = Mock()
@@ -64,7 +65,7 @@ class TestResolveCredentials:
         assert result["password"] == "password"
         assert result["database"] == "mydb"
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_resolve_from_connection_id(self, mock_hook):
         """Test resolving from connection ID string"""
         mock_conn = Mock()
@@ -97,7 +98,7 @@ class TestResolveCredentials:
 
         assert result == config_dict
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_resolve_snowflake(self, mock_hook):
         """Test Snowflake connection resolution"""
         mock_conn = Mock()
@@ -109,7 +110,7 @@ class TestResolveCredentials:
         mock_conn.extra_dejson = {
             "account": "xy12345",
             "warehouse": "COMPUTE_WH",
-            "role": "TRANSFORMER"
+            "role": "TRANSFORMER",
         }
         mock_hook.get_connection.return_value = mock_conn
 
@@ -120,7 +121,7 @@ class TestResolveCredentials:
         assert result["warehouse"] == "COMPUTE_WH"
         assert result["role"] == "TRANSFORMER"
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_explicit_resolver_type(self, mock_hook):
         """Test explicitly specifying resolver type"""
         mock_conn = Mock()
@@ -143,6 +144,7 @@ class TestCustomResolver:
 
     def test_register_custom_resolver(self):
         """Test registering a custom credential resolver"""
+
         class TestResolver(CredentialResolver):
             def resolve(self, identifier):
                 return {
@@ -150,7 +152,7 @@ class TestCustomResolver:
                     "identifier": identifier,
                 }
 
-        register_credential_resolver('test', TestResolver())
+        register_credential_resolver("test", TestResolver())
 
         result = resolve_credentials("test_id", resolver_type="test")
 
@@ -158,11 +160,10 @@ class TestCustomResolver:
         assert result["identifier"] == "test_id"
 
 
-
 class TestGeneratorIntegration:
     """Integration tests with SQLMeshDAGGenerator"""
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_generator_with_connection_object(self, mock_hook):
         """Test passing connection object directly to generator"""
         from sqlmesh_dag_generator import SQLMeshDAGGenerator
@@ -187,7 +188,7 @@ class TestGeneratorIntegration:
         assert generator.config.sqlmesh.connection_config["type"] == "postgres"
         assert generator.config.sqlmesh.connection_config["host"] == "localhost"
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_generator_with_connection_id(self, mock_hook):
         """Test passing connection ID string to generator"""
         from sqlmesh_dag_generator import SQLMeshDAGGenerator
@@ -222,7 +223,7 @@ class TestGeneratorIntegration:
             "port": 5432,
             "user": "user",
             "password": "password",
-            "database": "mydb"
+            "database": "mydb",
         }
 
         generator = SQLMeshDAGGenerator(
@@ -234,7 +235,7 @@ class TestGeneratorIntegration:
 
         assert generator.config.sqlmesh.connection_config == connection_config
 
-    @patch('sqlmesh_dag_generator.airflow_compat.BaseHook')
+    @patch("sqlmesh_dag_generator.airflow_compat.BaseHook")
     def test_generator_with_separate_connections(self, mock_hook):
         """Test separate data and state connections"""
         from sqlmesh_dag_generator import SQLMeshDAGGenerator
@@ -259,4 +260,3 @@ class TestGeneratorIntegration:
 
         assert generator.config.sqlmesh.connection_config is not None
         assert generator.config.sqlmesh.state_connection_config is not None
-

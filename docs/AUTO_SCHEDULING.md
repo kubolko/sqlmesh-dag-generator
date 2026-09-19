@@ -1,10 +1,10 @@
 # Auto-Scheduling Guide
 
-## 📅 Automatic Schedule Detection
+## Automatic Schedule Detection
 
 SQLMesh DAG Generator can **automatically detect** the optimal Airflow DAG schedule based on your SQLMesh model intervals. No manual configuration needed!
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Default Behavior (Auto-Schedule Enabled)
 
@@ -44,7 +44,7 @@ recommended_schedule = generator.get_recommended_schedule()
 #          "@daily" if all models are daily or longer
 ```
 
-## ⚠️ Mixed cadences on one DAG (important)
+## Mixed cadences on one DAG (important)
 
 Auto-schedule sets the DAG to the **shortest** model interval. That means:
 
@@ -82,7 +82,7 @@ If the hot path is still too heavy (e.g. many true 5-minute models), split into
 separate DAGs with `include_models` / tags rather than one mega-DAG. Early skip
 is the right default for mixed projects; split is the next step for scale.
 
-## 🎯 How It Works
+## How It Works
 
 ### 1. SQLMesh Models Define Intervals
 
@@ -141,8 +141,8 @@ generator = SQLMeshDAGGenerator(
 # - frequent_updates: FIVE_MINUTE (5 minutes)
 # - hourly_aggregates: HOUR (60 minutes)
 # - daily_summary: DAY (1440 minutes)
-# 
-# Minimum: FIVE_MINUTE → Recommends "*/5 * * * *"
+#
+# Minimum: FIVE_MINUTE Recommends "*/5 * * * *"
 ```
 
 ### 3. SQLMesh Handles the Rest
@@ -155,7 +155,7 @@ The DAG runs at the shortest interval (`*/5 * * * *`), but SQLMesh's planner is 
 
 **You don't need separate DAGs for different intervals!** SQLMesh tracks each model's last processed interval and only runs what's needed.
 
-## 📊 Supported Intervals
+## Supported Intervals
 
 | SQLMesh Interval | Airflow Cron | Frequency |
 |-----------------|--------------|-----------|
@@ -175,7 +175,7 @@ The DAG runs at the shortest interval (`*/5 * * * *`), but SQLMesh's planner is 
 
 **Note:** If SQLMesh introduces new intervals in future versions, they will safely default to `@daily` until explicitly mapped.
 
-## 🔍 Inspecting Your Schedule
+## Inspecting Your Schedule
 
 ### Get Model Intervals Summary
 
@@ -205,7 +205,7 @@ print(f"Recommended schedule: {recommended}")
 # Output: Recommended schedule: */5 * * * *
 ```
 
-## ⚙️ Configuration Options
+## Configuration Options
 
 ### Option 1: Full Auto (Default)
 
@@ -277,7 +277,7 @@ with DAG(
     generator.create_tasks_in_dag(dag)
 ```
 
-## 🎛️ Advanced: Throttling
+## Advanced: Throttling
 
 If auto-detection suggests a schedule that's too frequent:
 
@@ -309,7 +309,7 @@ recommended_minutes = schedule_to_minutes.get(recommended, 1440)
 if recommended_minutes < MINIMUM_INTERVAL_MINUTES:
     # Throttle to minimum
     final_schedule = "*/15 * * * *"
-    print(f"⚠️  Throttling {recommended} to {final_schedule}")
+    print(f"Throttling {recommended} to {final_schedule}")
 else:
     final_schedule = recommended
 
@@ -318,7 +318,7 @@ else:
 
 See [examples/5_custom_schedule.py](../examples/5_custom_schedule.py) for complete examples.
 
-## 🌍 Multi-Environment Considerations
+## Multi-Environment Considerations
 
 Auto-scheduling works seamlessly with multi-environment setups:
 
@@ -338,7 +338,7 @@ prod_generator = SQLMeshDAGGenerator(
 )
 ```
 
-## 📝 Dynamic DAG Mode
+## Dynamic DAG Mode
 
 Auto-scheduling works in both static and dynamic modes:
 
@@ -369,7 +369,7 @@ dag_code = generator.generate_dynamic_dag()
 
 In dynamic mode, the schedule detection happens **every time Airflow parses the DAG**, so it automatically adapts to model changes!
 
-## ⚠️ Important Notes
+## Important Notes
 
 ### 1. No Interval Specified
 
@@ -405,38 +405,38 @@ Very frequent DAG runs (every minute) can stress the Airflow scheduler:
 - Consider throttling to 5-15 minute minimum
 - Use task groups if you have 100+ models
 
-## 🎯 Best Practices
+## Best Practices
 
-### ✅ DO
+### DO
 
 - Use auto-scheduling in production for optimal data freshness
 - Inspect the recommendation before deploying
 - Throttle if necessary for cost/performance
 - Use dynamic mode for automatic adaptation
 
-### ❌ DON'T
+### DON'T
 
 - Don't blindly accept minute-level schedules without cost analysis
 - Don't create separate DAGs for each interval (SQLMesh handles it!)
 - Don't hardcode schedules when auto-detection works
 
-## 🔗 Related Documentation
+## Related Documentation
 
 - [Simple Example](../examples/simple_generate.py)
 - [Custom Schedule Example](../examples/5_custom_schedule.py)
-- [Multi-Environment Guide](MULTI_ENVIRONMENT.md)
-- [Dynamic DAGs Guide](DYNAMIC_DAGS.md)
+- [Environments and gateways](ENVIRONMENTS.md)
+- [Usage reference](USAGE.md)
 - [Usage Guide](USAGE.md)
 
-## 📊 Example Output
+## Example Output
 
 ```python
 generator = SQLMeshDAGGenerator(
     sqlmesh_project_path="/my/project",
 )
 
-print("📅 Recommended schedule:", generator.get_recommended_schedule())
-print("📊 Model intervals:")
+print("Recommended schedule:", generator.get_recommended_schedule())
+print("Model intervals:")
 for interval, models in generator.get_model_intervals_summary().items():
     print(f"  {interval}: {len(models)} models")
     for model in models[:3]:  # Show first 3
@@ -445,8 +445,8 @@ for interval, models in generator.get_model_intervals_summary().items():
         print(f"    ... and {len(models) - 3} more")
 
 # Output:
-# 📅 Recommended schedule: */5 * * * *
-# 📊 Model intervals:
+# Recommended schedule: */5 * * * *
+# Model intervals:
 #   FIVE_MINUTE: 2 models
 #     - real_time_metrics
 #     - live_dashboard
@@ -467,5 +467,5 @@ for interval, models in generator.get_model_intervals_summary().items():
 **Next Steps:**
 - Try the [Simple Example](../examples/simple_generate.py)
 - Explore [Custom Schedule Example](../examples/5_custom_schedule.py)
-- Learn about [Dynamic DAGs](DYNAMIC_DAGS.md)
+- Learn about the other generation modes in the [usage reference](USAGE.md)
 

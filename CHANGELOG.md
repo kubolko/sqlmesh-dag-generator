@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-19
+
+### Added
+- **dbt-style model selection** (`sqlmesh_dag_generator.selectors`). `select` /
+  `exclude` accept expressions evaluated against the model graph: `tag:finance+`,
+  `+path:models/marts`, `kind:INCREMENTAL*`, `owner:`, `project:`, `interval:`,
+  `cron:`, wildcards, `@`, depth-limited `2+model`, unions (whitespace) and
+  intersections (comma). See `docs/SELECTION.md`.
+- **Named selectors** in the config file (`selectors:`), the dbt `selectors.yml` idea,
+  referenced as `selector:<name>`.
+- **DAG groups**: one SQLMesh project, several Airflow DAGs
+  (`dag_groups:` + `build_dag_groups()`). Cross-group lineage is wired with Airflow
+  Datasets/Assets or `ExternalTaskSensor`s. See `docs/DAG_GROUPS.md`.
+- **Per-selection task settings** (`generation.task_overrides`): pool, queue, retries,
+  timeout, priority weight, SLA and trigger rule for everything a selection matches.
+- **Airflow Datasets/Assets per model** (`generation.emit_datasets`), so other DAGs can
+  be scheduled on model completion instead of a clock.
+- **Model metadata on the tasks** (`generation.model_docs`, on by default): owner,
+  description, kind, cron (with timezone), tags and audits as `doc_md`.
+- **Maintenance tasks**: `create_unit_test_task`, `create_lint_task`,
+  `create_audit_task`, `create_janitor_task`, `create_restate_task`
+  (`docs/MAINTENANCE_TASKS.md`), plus `generation.audit_tasks` for per-model audit
+  tasks that gate downstream models, the way `dbt build` does.
+- **Orchestration manifest** (`build_manifest`, `write_manifest`, `diff_manifests`,
+  `--manifest`): every model with its task id, schedule, lineage and dataset URI, so
+  CI can diff what a change does to Airflow.
+- **CLI**: `--select`, `--exclude`, `--list-models`, `--list-groups`, `--manifest`.
+- Runtime `on_failure_callback` / `on_success_callback` are now applied to tasks
+  created by `create_tasks_in_dag` (previously only in generated DAG files).
+
+### Changed
+- **`cron_tz` is respected** when deciding whether a model is due
+  (SQLMesh 0.235.4+). A daily model with `cron_tz 'Europe/Warsaw'` is due at local
+  midnight, not UTC midnight - previously it could be skipped on the wrong tick.
+- `SQLMeshModelInfo` gained `display_name`, `path`, `cron_tz`, `project` and `audits`.
+- SQLMesh keyword arguments are filtered against the installed version's signature
+  (`ops_tasks.supported_kwargs`) instead of ad-hoc `inspect` checks.
+- Packaging moved to PEP 621 (`pyproject.toml`, `setup.py` removed), with an accurate
+  `requires-python = ">=3.9"` (SQLMesh has not supported 3.8 since 0.228).
+- CLI `--environment` now defaults to `""` (no virtual environment), matching the
+  library default and the documented gateway-based workflow.
+- Documentation rewritten; `scripts/` holds the release and config-validation helpers.
+
+### Added (opt-in)
+- `generation.no_auto_upstream` passes `no_auto_upstream=True` to `Context.run`
+  (SQLMesh 0.230+). Airflow already schedules every upstream model as its own task,
+  so letting SQLMesh chase upstream again duplicates work and can put two tasks on
+  the same table. It stays **off** in this release - changing run semantics in the
+  same version that reworks selection and task wiring would make any regression hard
+  to attribute. **Planned to default to `true` in 0.11.0**; turn it on now with
+  `generation.no_auto_upstream: true` and keep the old behaviour later by setting it
+  to `false` explicitly.
+
+### Fixed
+- `utils.localize_to_cron_tz` handles naive timestamps (the previous code path had no
+  `timezone` import in scope).
+- Removed two dead helpers in `utils.py` that shadowed the real implementations in
+  `validation.py` with different signatures.
+- A stale test asserted that an hourly model runs on a 12:30 tick; with
+  `skip_if_not_due` (0.9.15) it is correctly skipped there.
+
 ## [0.9.15] - 2026-08-10
 
 ### Added
@@ -36,7 +97,7 @@ generation:
 
 ### Added
 - **Per-model downstream DAG triggers** for clean separation of concerns:
-  - Config: `generation.model_triggers` map (`model FQN` → dag id / dict / `ModelTriggerConfig`)
+  - Config: `generation.model_triggers` map (`model FQN` dag id / dict / `ModelTriggerConfig`)
   - SQLMesh-native tags on the model:
     - `trigger_dag:<dag_id>`
     - `trigger_conf:<key>=<value>` (optional, repeatable)
@@ -136,7 +197,7 @@ generation:
 ## [0.4.0] - 2025-12-09
 
 ### Enhanced
-- **Enhanced Auto-Scheduling Interval Support** 📅
+- **Enhanced Auto-Scheduling Interval Support**
   - Expanded interval mapping from 10 to 13 supported intervals
   - Added defensive alias support: `THIRTY_MINUTE`, `FIFTEEN_MINUTE`
   - Added `TEN_MINUTE` interval support (`*/10 * * * *`)
@@ -159,7 +220,7 @@ generation:
 ## [0.3.0] - 2025-12-09
 
 ### Added
-- **Auto-Scheduling** 📅
+- **Auto-Scheduling**
   - NEW: `auto_schedule` parameter (enabled by default)
   - NEW: `get_recommended_schedule()` - Analyzes SQLMesh models and returns optimal Airflow schedule
   - NEW: `get_model_intervals_summary()` - See which models run at which intervals
@@ -169,7 +230,7 @@ generation:
   - Works in both static and dynamic DAG generation modes
   - See [Auto-Scheduling Guide](docs/AUTO_SCHEDULING.md) for details
 
-- **Plugin-Based Credential Resolver Architecture** 🔐
+- **Plugin-Based Credential Resolver Architecture**
   - NEW: `resolve_credentials()` - Universal credential resolution function
   - NEW: `CredentialResolver` - Base class for custom credential resolvers
   - NEW: `register_credential_resolver()` - Register custom resolvers
@@ -284,11 +345,11 @@ generation:
 - **ENHANCED**: Examples (production-ready patterns)
 
 
-3. **Environment Variable Injection** 🔐
+3. **Environment Variable Injection**
    - Secure credential handling
    - Per-DAG configuration
 
-4. **Production Deployment Guide** 📚
+4. **Production Deployment Guide**
    - Everything you need to know for distributed Airflow
    - Kubernetes best practices
    - Troubleshooting guide

@@ -16,9 +16,10 @@ Design Philosophy:
 - Extensible via plugins
 - Minimal boilerplate for users
 """
-from typing import Dict, Any, Optional, Union, Callable
+
 import logging
 from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 # Credential Resolver Architecture
 # ==============================================================================
+
 
 class CredentialResolver(ABC):
     """
@@ -68,7 +70,7 @@ class AirflowConnectionResolver(CredentialResolver):
             SQLMesh-compatible connection config
         """
         # If it's already a connection object, use it directly
-        if hasattr(identifier, 'conn_type'):
+        if hasattr(identifier, "conn_type"):
             conn = identifier
         else:
             # It's a connection ID, fetch it
@@ -125,15 +127,16 @@ class AWSSecretsManagerResolver(CredentialResolver):
             SQLMesh-compatible connection config
         """
         try:
-            import boto3
             import json
 
-            client = boto3.client('secretsmanager')
+            import boto3
+
+            client = boto3.client("secretsmanager")
             response = client.get_secret_value(SecretId=identifier)
 
             # Parse JSON secret
-            if 'SecretString' in response:
-                secret = json.loads(response['SecretString'])
+            if "SecretString" in response:
+                secret = json.loads(response["SecretString"])
                 return secret
             else:
                 raise ValueError("Binary secrets not supported")
@@ -156,9 +159,9 @@ class CallableResolver(CredentialResolver):
 
 # Registry of available resolvers
 _RESOLVERS = {
-    'airflow': AirflowConnectionResolver(),
-    'env': EnvironmentVariableResolver(),
-    'aws_secrets': AWSSecretsManagerResolver(),
+    "airflow": AirflowConnectionResolver(),
+    "env": EnvironmentVariableResolver(),
+    "aws_secrets": AWSSecretsManagerResolver(),
 }
 
 
@@ -238,25 +241,26 @@ def _auto_detect_resolver(source: Any) -> str:
     """Auto-detect which resolver to use based on source type."""
 
     # Check if it's an Airflow Connection object
-    if hasattr(source, 'conn_type') and hasattr(source, 'host'):
-        return 'airflow'
+    if hasattr(source, "conn_type") and hasattr(source, "host"):
+        return "airflow"
 
     # Check if it's a string (could be connection ID or secret name)
     if isinstance(source, str):
         # Default to Airflow for strings
-        return 'airflow'
+        return "airflow"
 
     # Check if it's a dict (env var mapping)
     if isinstance(source, dict):
-        return 'env'
+        return "env"
 
     # Default to Airflow
-    return 'airflow'
+    return "airflow"
 
 
 # ==============================================================================
 # Connection Building Helpers
 # ==============================================================================
+
 
 def _build_config_from_connection(conn: Any, conn_type: str) -> Dict[str, Any]:
     """Build SQLMesh config from an Airflow connection object."""
@@ -272,59 +276,73 @@ def _build_config_from_connection(conn: Any, conn_type: str) -> Dict[str, Any]:
         # Note: default_catalog is NOT a valid Redshift connection config field
         # It should be set at the SQLMesh config level, not connection level
         database = conn.schema or "dev"
-        config.update({
-            "host": conn.host,
-            "port": conn.port or 5439,  # Redshift default port
-            "user": conn.login,
-            "password": conn.password,
-            "database": database,
-        })
+        config.update(
+            {
+                "host": conn.host,
+                "port": conn.port or 5439,  # Redshift default port
+                "user": conn.login,
+                "password": conn.password,
+                "database": database,
+            }
+        )
     elif conn_type in ["postgres", "postgresql"]:
-        config.update({
-            "host": conn.host,
-            "port": conn.port or 5432,
-            "user": conn.login,
-            "password": conn.password,
-            "database": conn.schema or "postgres",
-        })
+        config.update(
+            {
+                "host": conn.host,
+                "port": conn.port or 5432,
+                "user": conn.login,
+                "password": conn.password,
+                "database": conn.schema or "postgres",
+            }
+        )
     elif conn_type in ["mysql", "mariadb"]:
-        config.update({
-            "host": conn.host,
-            "port": conn.port or 3306,
-            "user": conn.login,
-            "password": conn.password,
-            "database": conn.schema,
-        })
+        config.update(
+            {
+                "host": conn.host,
+                "port": conn.port or 3306,
+                "user": conn.login,
+                "password": conn.password,
+                "database": conn.schema,
+            }
+        )
     elif conn_type == "snowflake":
         # Parse extra for Snowflake-specific settings
         extra = conn.extra_dejson
-        config.update({
-            "account": extra.get("account") or conn.host,
-            "user": conn.login,
-            "password": conn.password,
-            "database": conn.schema,
-            "warehouse": extra.get("warehouse"),
-            "role": extra.get("role"),
-        })
+        config.update(
+            {
+                "account": extra.get("account") or conn.host,
+                "user": conn.login,
+                "password": conn.password,
+                "database": conn.schema,
+                "warehouse": extra.get("warehouse"),
+                "role": extra.get("role"),
+            }
+        )
     elif conn_type == "bigquery":
         extra = conn.extra_dejson
-        config.update({
-            "project": extra.get("project") or conn.schema,
-            "credentials_path": extra.get("keyfile_path"),
-            "location": extra.get("location", "US"),
-        })
+        config.update(
+            {
+                "project": extra.get("project") or conn.schema,
+                "credentials_path": extra.get("keyfile_path"),
+                "location": extra.get("location", "US"),
+            }
+        )
     elif conn_type == "databricks":
         extra = conn.extra_dejson
-        config.update({
-            "server_hostname": conn.host,
-            "http_path": extra.get("http_path"),
-            "access_token": conn.password or extra.get("token"),
-            "catalog": extra.get("catalog"),
-        })
+        config.update(
+            {
+                "server_hostname": conn.host,
+                "http_path": extra.get("http_path"),
+                "access_token": conn.password or extra.get("token"),
+                "catalog": extra.get("catalog"),
+            }
+        )
     elif conn_type == "duckdb":
-        config.update({
-            "database": conn.host or ":memory:",
-        })
+        config.update(
+            {
+                "database": conn.host or ":memory:",
+            }
+        )
     else:
         # Generic config - include all available fields
         if conn.host:
@@ -361,7 +379,3 @@ def _map_airflow_conn_type_to_sqlmesh(airflow_conn_type: str) -> str:
     }
 
     return mapping.get(airflow_conn_type.lower(), airflow_conn_type)
-
-
-
-
