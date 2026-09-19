@@ -4,7 +4,10 @@ Packaging invariants that are easy to break and annoying to discover on PyPI.
 
 import pathlib
 
-import tomllib
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover - Python 3.9 / 3.10
+    import tomli as tomllib
 
 import sqlmesh_dag_generator
 
