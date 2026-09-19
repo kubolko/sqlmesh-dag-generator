@@ -134,13 +134,21 @@ def test_models_without_audits_get_no_audit_task():
     assert "dwh.orders_summary__audit" not in tasks
 
 
+def _callbacks(task):
+    """Airflow 2 stores a single callback, Airflow 3 stores a list of them."""
+    callbacks = task.on_failure_callback
+    if callbacks is None:
+        return []
+    return list(callbacks) if isinstance(callbacks, (list, tuple)) else [callbacks]
+
+
 def test_failure_callback_is_imported_from_a_dotted_path():
     generator = _generator(on_failure_callback="json.dumps")
     _, tasks = _build(generator)
 
     import json
 
-    assert tasks["dwh.orders"].on_failure_callback is json.dumps
+    assert _callbacks(tasks["dwh.orders"]) == [json.dumps]
 
 
 def test_unimportable_callback_is_ignored(caplog):
@@ -148,7 +156,7 @@ def test_unimportable_callback_is_ignored(caplog):
         generator = _generator(on_failure_callback="not_a_module.nope")
         _, tasks = _build(generator)
 
-    assert tasks["dwh.orders"].on_failure_callback is None
+    assert _callbacks(tasks["dwh.orders"]) == []
     assert "Could not import callback" in caplog.text
 
 

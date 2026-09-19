@@ -61,6 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `false` explicitly.
 
 ### Fixed
+- **Generated dynamic DAGs no longer require Python 3.12.** The template emitted a
+  task-id expression as an f-string with nested double quotes (PEP 701), so a DAG
+  generated on a 3.12 machine failed to import on an Airflow worker running 3.9-3.11
+  with `SyntaxError: f-string: unterminated string`. Task ids now come from the shared
+  `sqlmesh_dag_generator.models.model_task_id`, which is also what runtime mode uses,
+  so the two can no longer drift.
 - `utils.localize_to_cron_tz` handles naive timestamps (the previous code path had no
   `timezone` import in scope).
 - Removed two dead helpers in `utils.py` that shadowed the real implementations in
