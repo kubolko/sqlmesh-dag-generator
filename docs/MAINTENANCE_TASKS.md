@@ -5,6 +5,13 @@ commands as Airflow tasks, with the same runtime connection handling and
 `dag_run.conf` overrides as the rest of the package. Each returns a plain
 `PythonOperator`.
 
+`create_tasks_in_dag` already appends one `sqlmesh_janitor` after the leaf models
+and passes `skip_janitor=True` on every model `run()`. That is required: SQLMesh
+compacts interval state at the start of each prod `run()`, and doing that from
+every parallel task deadlocks Postgres on `_intervals`. Call
+`create_janitor_task` yourself only on a DAG that does not use
+`create_tasks_in_dag`.
+
 ## A deploy DAG
 
 ```python

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqlmesh-dag-generator"
-version = "0.10.0"
+version = "0.10.1"
 description = "Generate Airflow DAGs from SQLMesh projects, with model-level lineage and no cloud dependency"
 readme = "README.md"
 license = "MIT"

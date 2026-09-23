@@ -1414,6 +1414,10 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                             # pull them in again duplicates work and can have two tasks
                             # writing the same table at once.
                             run_kwargs["no_auto_upstream"] = True
+                        # SQLMesh janitors at the start of every prod run(). One
+                        # DELETE on state._intervals per parallel task deadlocks
+                        # Postgres. Compaction happens once, in sqlmesh_janitor.
+                        run_kwargs["skip_janitor"] = True
 
                         result = run_ctx.run(**supported_kwargs(run_ctx.run, run_kwargs))
 
@@ -1551,6 +1555,26 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 replan_task >> current_task
             elif health_check_task and not current_task.upstream_task_ids:
                 health_check_task >> current_task
+
+        # One janitor after the models. It must stay downstream: callers such as
+        # the CarrierOps pipeline treat "no upstream" as a model root and hang
+        # the streaming-MV refresh off those roots.
+        if target_models:
+            if self.dag_structure:
+                janitor_leaves = [
+                    n for n in self.dag_structure.get_leaf_models() if n in target_models
+                ]
+            else:
+                depended_on = {d for info in target_models.values() for d in info.dependencies}
+                janitor_leaves = [n for n in target_models if n not in depended_on]
+            janitor_task = self.create_janitor_task(dag, trigger_rule="all_done")
+            for name in janitor_leaves:
+                audit_tasks_by_model.get(name, tasks[name]) >> janitor_task
+            tasks["sqlmesh_janitor"] = janitor_task
+            logger.info(
+                "sqlmesh_janitor runs once after %s leaf model(s); model tasks skip janitor",
+                len(janitor_leaves),
+            )
 
         # Step 5: Per-model downstream DAG triggers (tags and/or model_triggers map)
         # Fires only after *that* model succeeds — clean SoC for unload / notify DAGs.
