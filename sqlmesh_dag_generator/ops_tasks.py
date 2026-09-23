@@ -271,6 +271,7 @@ class SQLMeshOpsTasksMixin:
         environment: Optional[str] = None,
         ignore_ttl: bool = False,
         execution_timeout: Optional[timedelta] = None,
+        trigger_rule: str = "all_success",
     ):
         """
         Drop expired environments and orphaned physical tables (``sqlmesh janitor``).
@@ -307,6 +308,7 @@ class SQLMeshOpsTasksMixin:
             task_id=task_id,
             python_callable=run_janitor,
             execution_timeout=execution_timeout,
+            trigger_rule=trigger_rule,
             dag=dag,
         )
 

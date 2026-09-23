@@ -331,6 +331,7 @@ dag = DAG(
         start=start,
         end=end,
         select_models=["{model_name_escaped}"],
+        skip_janitor=True,
     )
 
     logger.info(f"Model {model_name_escaped} completed successfully")
@@ -366,7 +367,10 @@ dag = DAG(
 
     def _build_bash_task(self, model_info: SQLMeshModelInfo, task_id: str) -> str:
         """Build a BashOperator task"""
-        bash_command = f"cd {self.config.sqlmesh.project_path} && sqlmesh run --select-models {model_info.name}"
+        bash_command = (
+            f"cd {self.config.sqlmesh.project_path} && "
+            f"sqlmesh run --skip-janitor --select-models {model_info.name}"
+        )
 
         return dedent(f"""
             {task_id} = BashOperator(
@@ -412,6 +416,7 @@ dag = DAG(
                 cmds=["sqlmesh"],
                 arguments=[
                     "run",
+                    "--skip-janitor",
                     "--select-models", "{model_name_escaped}",
                     "--start", "{{{{ data_interval_start }}}}",
                     "--end", "{{{{ data_interval_end }}}}",
@@ -499,6 +504,46 @@ dag = DAG(
             ]
             if leaf_tasks:
                 dep_lines.append(f"[{', '.join(leaf_tasks)}] >> trigger_downstream")
+
+        # Same rule as create_tasks_in_dag: one janitor after the leaves, so
+        # parallel `sqlmesh run` tasks do not DELETE state._intervals together.
+        leaf_tasks = [
+            info.get_task_id()
+            for name, info in self.dag_structure.models.items()
+            if name
+            not in {dep for m in self.dag_structure.models.values() for dep in m.dependencies}
+        ]
+        if leaf_tasks and self.config.generation.operator_type == "python":
+            dep_lines.append("")
+            dep_lines.append(
+                """def _run_sqlmesh_janitor(**context):
+    from sqlmesh import Context
+    ctx = Context(paths=SQLMESH_PROJECT_PATH, gateway=SQLMESH_GATEWAY)
+    ctx.run_janitor(ignore_ttl=False)
+    return {"status": "completed"}
+
+sqlmesh_janitor = PythonOperator(
+    task_id="sqlmesh_janitor",
+    python_callable=_run_sqlmesh_janitor,
+    trigger_rule="all_done",
+    dag=dag,
+)"""
+            )
+            dep_lines.append(f"[{', '.join(leaf_tasks)}] >> sqlmesh_janitor")
+        elif leaf_tasks and self.config.generation.operator_type == "bash":
+            janitor_cmd = (
+                f"cd {self.config.sqlmesh.project_path} && sqlmesh janitor"
+            )
+            dep_lines.append("")
+            dep_lines.append(
+                f'''sqlmesh_janitor = BashOperator(
+    task_id="sqlmesh_janitor",
+    bash_command="{janitor_cmd}",
+    trigger_rule="all_done",
+    dag=dag,
+)'''
+            )
+            dep_lines.append(f"[{', '.join(leaf_tasks)}] >> sqlmesh_janitor")
 
         return "\n".join(dep_lines)
 
@@ -820,6 +865,7 @@ with DAG(
                     start=recovery_start,
                     end=recovery_end,
                     select_models=list(discovered_models.keys()),
+                    skip_janitor=True,
                 )
                 return {{
                     "status": result.name if hasattr(result, "name") else str(result),
@@ -887,6 +933,7 @@ with DAG(
                         start=start,
                         end=end,
                         select_models=[model_fqn],
+                        skip_janitor=True,
                     )
 
                     logger.info(f"Model {{model_display_name}} completed successfully")
@@ -934,6 +981,21 @@ with DAG(
 
         if recovery_anchor and not model_info["dependencies"]:
             recovery_anchor >> current_task
+
+    def run_sqlmesh_janitor(**context):
+        run_ctx = Context(paths=SQLMESH_PROJECT_PATH, gateway=SQLMESH_GATEWAY)
+        run_ctx.run_janitor(ignore_ttl=False)
+        return {{"status": "completed"}}
+
+    sqlmesh_janitor = PythonOperator(
+        task_id="sqlmesh_janitor",
+        python_callable=run_sqlmesh_janitor,
+        trigger_rule="all_done",
+    )
+    for _task in list(tasks.values()):
+        if not _task.downstream_list:
+            _task >> sqlmesh_janitor
+    tasks["sqlmesh_janitor"] = sqlmesh_janitor
 
     logger.info(f"DAG created with {{len(tasks)}} tasks")'''
 

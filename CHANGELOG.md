@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-23
+
+### Fixed
+- Model tasks pass `skip_janitor=True` to `Context.run()`. On `prod`, SQLMesh
+  runs `compact_intervals()` at the start of every `run()`, and parallel Airflow
+  tasks deadlock on `DELETE` from the state table `_intervals`
+  (`deadlock detected` / `ShareLock on transaction`).
+- `create_tasks_in_dag` adds one `sqlmesh_janitor` task after the leaf models
+  (`trigger_rule=all_done`). It is not a root, so a streaming-MV refresh gate
+  that keys off tasks with no upstream still sees the model roots.
+- Generated Python, Bash (`--skip-janitor`) and Kubernetes runs follow the same
+  rule. Python and Bash DAGs get one janitor after the leaves.
+
 ## [0.10.0] - 2026-09-19
 
 ### Added

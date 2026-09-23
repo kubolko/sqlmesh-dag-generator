@@ -190,7 +190,7 @@ class TestSQLMeshDAGGenerator:
 
             # Should return dictionary of tasks
             assert isinstance(tasks, dict)
-            assert len(tasks) == 3  # 3 models
+            assert len(tasks) == 4  # 3 models + one sqlmesh_janitor
 
             # All values should be Airflow operators
             for task in tasks.values():
@@ -266,6 +266,7 @@ class TestSQLMeshDAGGenerator:
         assert hourly_kwargs.get("start") is None
         assert hourly_kwargs.get("end") is None
         assert hourly_kwargs["select_models"] == ["dwh.f_hourly"]
+        assert hourly_kwargs["skip_janitor"] is True
 
         # 5-min model (matches tick): keeps the explicit window (unchanged).
         run_ctx.run.reset_mock()
@@ -277,6 +278,7 @@ class TestSQLMeshDAGGenerator:
         _, raw_kwargs = run_ctx.run.call_args
         assert raw_kwargs["start"] == tick_start
         assert raw_kwargs["end"] == tick_end
+        assert raw_kwargs["skip_janitor"] is True
         assert raw_kwargs["select_models"] == ["dwh.raw_5m"]
 
     def test_static_dag_generation(self, demo_sqlmesh_project):
@@ -391,6 +393,11 @@ class TestSQLMeshDAGGenerator:
         assert "sqlmesh_integrity_guard" in tasks
         assert "sqlmesh_recovery_backfill" in tasks
         assert "sqlmesh_recovery_backfill" in tasks["dwh.raw_5m"].upstream_task_ids
+        # Janitor is downstream of the leaves, so model roots stay roots.
+        assert "sqlmesh_janitor" in tasks
+        assert "sqlmesh_janitor" not in tasks["dwh.raw_5m"].upstream_task_ids
+        assert tasks["dwh.report"].task_id in tasks["sqlmesh_janitor"].upstream_task_ids
+        assert tasks["sqlmesh_janitor"].trigger_rule == "all_done"
 
     @patch("sqlmesh_dag_generator.generator.Context")
     def test_bounded_recovery_replays_full_missing_window(self, mock_context):
