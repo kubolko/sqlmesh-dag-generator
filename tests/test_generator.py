@@ -636,6 +636,188 @@ class TestSQLMeshDAGGenerator:
         assert result["status"] == "applied"
         assert result["requires_backfill"] is True
 
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_changed_scope_backfills_only_added_and_direct(self, mock_context):
+        """Default scope plans a second time with added and directly modified names."""
+        from airflow import DAG
+
+        preview = MagicMock()
+        preview.has_changes = True
+        preview.requires_backfill = True
+        preview.new_snapshots = []
+        preview.modified_snapshots = {}
+        preview.missing_intervals = []
+        preview.context_diff.added = {type("Snap", (), {"name": "dwh.added"})()}
+        preview.context_diff.modified_snapshots = {
+            "dwh.direct": (None, None),
+            "dwh.downstream": (None, None),
+        }
+        preview.context_diff.directly_modified = lambda name: name == "dwh.direct"
+
+        scoped = MagicMock()
+        scoped.has_changes = True
+        scoped.requires_backfill = True
+        scoped.new_snapshots = [1]
+        scoped.modified_snapshots = {}
+        scoped.missing_intervals = [1]
+
+        run_ctx = MagicMock()
+        run_ctx.plan.side_effect = [preview, scoped]
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+        generator.runtime_gateway = "prod"
+
+        with DAG("test_deploy_changed", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        assert run_ctx.plan.call_count == 2
+        assert "backfill_models" not in run_ctx.plan.call_args_list[0].kwargs
+        assert run_ctx.plan.call_args_list[1].kwargs["backfill_models"] == [
+            "dwh.added",
+            "dwh.direct",
+        ]
+        run_ctx.apply.assert_called_once_with(scoped)
+        assert result["status"] == "applied"
+        assert result["backfill_models"] == ["dwh.added", "dwh.direct"]
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_changed_scope_skips_unrelated_interval_gaps(self, mock_context):
+        """Gaps on models outside the diff do not get an apply."""
+        from airflow import DAG
+
+        preview = MagicMock()
+        preview.has_changes = False
+        preview.requires_backfill = True
+        preview.new_snapshots = []
+        preview.modified_snapshots = {}
+        preview.missing_intervals = [1, 2, 3]
+        preview.context_diff.added = set()
+        preview.context_diff.modified_snapshots = {}
+
+        run_ctx = MagicMock()
+        run_ctx.plan.return_value = preview
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+
+        with DAG("test_deploy_gaps", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        run_ctx.plan.assert_called_once()
+        run_ctx.apply.assert_not_called()
+        assert result["status"] == "skipped"
+        assert result["reason"] == "no_changes"
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_changed_scope_applies_removal_without_backfill(self, mock_context):
+        """A removal-only diff is applied with skip_backfill, not an empty selector."""
+        from airflow import DAG
+
+        preview = MagicMock()
+        preview.has_changes = True
+        preview.requires_backfill = True
+        preview.new_snapshots = []
+        preview.modified_snapshots = {}
+        preview.missing_intervals = [1]
+        preview.context_diff.added = set()
+        preview.context_diff.modified_snapshots = {}
+
+        structural = MagicMock()
+        structural.has_changes = True
+        structural.requires_backfill = False
+        structural.new_snapshots = []
+        structural.modified_snapshots = {}
+        structural.missing_intervals = []
+
+        run_ctx = MagicMock()
+        run_ctx.plan.side_effect = [preview, structural]
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        generator.merged_config = MagicMock()
+
+        with DAG("test_deploy_removal", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        assert run_ctx.plan.call_args_list[1].kwargs["skip_backfill"] is True
+        assert "backfill_models" not in run_ctx.plan.call_args_list[1].kwargs
+        run_ctx.apply.assert_called_once_with(structural)
+        assert result["status"] == "applied"
+
+    @patch("sqlmesh_dag_generator.generator.Context")
+    def test_all_scope_keeps_a_single_unscoped_plan(self, mock_context):
+        """backfill_scope=all is the previous one-plan behaviour, gaps included."""
+        from airflow import DAG
+
+        plan = MagicMock()
+        plan.has_changes = False
+        plan.requires_backfill = True
+        plan.new_snapshots = []
+        plan.modified_snapshots = {}
+        plan.missing_intervals = [1]
+        plan.context_diff.added = set()
+        plan.context_diff.modified_snapshots = {}
+        run_ctx = MagicMock()
+        run_ctx.plan.return_value = plan
+        mock_context.return_value = run_ctx
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+            backfill_scope="all",
+        )
+        generator.merged_config = MagicMock()
+
+        with DAG("test_deploy_all", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag)
+
+        result = task.python_callable(dag_run=MagicMock(conf={}))
+
+        run_ctx.plan.assert_called_once()
+        assert "backfill_models" not in run_ctx.plan.call_args.kwargs
+        run_ctx.apply.assert_called_once_with(plan)
+        assert result["status"] == "applied"
+
+    def test_task_display_name_is_gated_on_airflow_support(self):
+        from airflow import DAG
+
+        from sqlmesh_dag_generator.airflow_compat import supports_task_display_name
+
+        generator = SQLMeshDAGGenerator(
+            sqlmesh_project_path="/tmp/project",
+            dag_id="test",
+            auto_replan_on_change=False,
+        )
+        with DAG("test_deploy_label", start_date=datetime(2024, 1, 1)) as dag:
+            task = generator.create_plan_apply_task(dag, task_display_name="Build changed models")
+
+        if supports_task_display_name():
+            assert task.task_display_name == "Build changed models"
+        else:
+            assert task.task_display_name == task.task_id
+
 
 class TestDynamicFeatures:
     """Test dynamic DAG specific features"""

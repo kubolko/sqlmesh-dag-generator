@@ -35,6 +35,55 @@ logger = logging.getLogger(__name__)
 install_credential_filter()
 
 
+def _directly_changed_model_names(plan: Any) -> List[str]:
+    """Models added or directly modified on a SQLMesh plan.
+
+    Indirect downstream fingerprint changes and metadata-only updates stay out,
+    so a publish does not backfill them. An empty list is never passed to
+    ``plan(backfill_models=...)``: SQLMesh treats that as "backfill everything".
+    """
+    diff = getattr(plan, "context_diff", None)
+    if diff is None:
+        return []
+    added = getattr(diff, "added", ())
+    modified = getattr(diff, "modified_snapshots", {})
+    if not isinstance(added, (set, list, tuple)):
+        added = ()
+    if not isinstance(modified, dict):
+        modified = {}
+
+    names = set()
+    for snapshot_id in added:
+        name = getattr(snapshot_id, "name", None)
+        if name:
+            names.add(str(name))
+
+    directly_modified = getattr(diff, "directly_modified", None)
+    if callable(directly_modified):
+        for name in modified:
+            try:
+                is_direct = directly_modified(name)
+            except Exception:
+                continue
+            if is_direct:
+                names.add(str(name))
+    else:
+        names.update(str(name) for name in modified)
+    return sorted(names)
+
+
+def _missing_interval_count(plan: Any) -> int:
+    """Count interval windows on a plan. Non-list mocks count as zero."""
+    missing = getattr(plan, "missing_intervals", None)
+    if not isinstance(missing, (list, tuple)):
+        return 0
+    total = 0
+    for item in missing:
+        intervals = getattr(item, "intervals", None)
+        total += len(intervals) if isinstance(intervals, (list, tuple)) else 1
+    return total
+
+
 class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
     """
     Main class for generating Airflow DAGs from SQLMesh projects.
@@ -238,6 +287,8 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 model_docs=kwargs.get("model_docs", True),
                 audit_tasks=kwargs.get("audit_tasks", False),
                 no_auto_upstream=kwargs.get("no_auto_upstream", False),
+                backfill_scope=kwargs.get("backfill_scope", "changed"),
+                model_checks=kwargs.get("model_checks") or {},
             )
 
             self.config = DAGGeneratorConfig(
@@ -377,9 +428,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                 # Merge state connection config
                 if self.config.sqlmesh.state_connection_config:
-                    config_dict["gateways"][gateway_name][
-                        "state_connection"
-                    ] = self.config.sqlmesh.state_connection_config
+                    config_dict["gateways"][gateway_name]["state_connection"] = (
+                        self.config.sqlmesh.state_connection_config
+                    )
                     logger.info(f"Runtime state connection configured for gateway: {gateway_name}")
                     logger.debug(
                         f"State connection config: {self.config.sqlmesh.state_connection_config}"
@@ -416,6 +467,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
             self.context = Context(**context_kwargs)
             logger.info("Successfully loaded SQLMesh context")
+            from sqlmesh_dag_generator.validation import validate_loaded_models
+
+            validate_loaded_models(
+                self.context,
+                gateway=self.runtime_gateway or self.config.sqlmesh.gateway,
+                checks=self.config.generation.model_checks,
+            )
             return self.context
         except Exception as e:
             logger.error(f"Failed to load SQLMesh context: {e}")
@@ -1678,6 +1736,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         execution_timeout: Optional[timedelta] = None,
         plan_only: Optional[bool] = None,
         skip_backfill: Optional[bool] = None,
+        task_display_name: Optional[str] = None,
     ):
         """
         Create a standalone SQLMesh plan+apply task (deploy path).
@@ -1685,6 +1744,15 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         Use this on a dedicated deploy DAG so interval/run DAGs never block on
         model changes. Hot-path pipelines should set ``auto_replan_on_change=False``
         and call only ``create_tasks_in_dag``.
+
+        ``generation.backfill_scope`` chooses what this task backfills:
+
+        - ``changed`` (default): backfill models added or directly modified in
+          this plan. Interval gaps on everything else stay where they are.
+        - ``all``: one ``plan()`` and a backfill of every model with gaps.
+
+        A plan that only removes or retitles models is applied with
+        ``skip_backfill``, so the environment updates and unrelated gaps stay.
 
         Optional ``dag_run.conf`` overrides:
 
@@ -1698,24 +1766,30 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 ``generation.replan_timeout_hours`` when set.
             plan_only: Override ``generation.plan_only`` for this task.
             skip_backfill: Override ``generation.skip_backfill`` for this task.
+            task_display_name: UI label. Passed through only when this Airflow
+                version accepts ``task_display_name`` on the operator.
 
         Returns:
             PythonOperator configured for SQLMesh plan+apply.
         """
         import time
 
-        from sqlmesh_dag_generator.airflow_compat import PythonOperator
+        from sqlmesh_dag_generator.airflow_compat import (
+            PythonOperator,
+            supports_task_display_name,
+        )
 
         default_plan_only = self.config.generation.plan_only if plan_only is None else plan_only
         default_skip_backfill = (
             self.config.generation.skip_backfill if skip_backfill is None else skip_backfill
         )
         log_details = self.config.generation.log_plan_details
+        backfill_scope = self.config.generation.backfill_scope
 
         def run_plan_apply(**context):
             """
             Optimized plan/apply:
-            1. Skip apply when nothing changed
+            1. Skip apply when this publish has nothing to build
             2. Honour plan_only / skip_backfill (config or dag_run.conf)
             3. Detailed phase logging
             """
@@ -1741,30 +1815,58 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
             logger.info("Phase 2/3: Computing plan (checking for changes)...")
             plan_start = time.time()
-            plan = run_ctx.plan(
-                environment=self.config.sqlmesh.environment,
-                auto_apply=False,
-                no_prompts=True,
+            plan_kwargs = {
+                "environment": self.config.sqlmesh.environment,
+                "auto_apply": False,
+                "no_prompts": True,
+            }
+            preview = run_ctx.plan(**plan_kwargs)
+            changed_names = (
+                _directly_changed_model_names(preview) if backfill_scope == "changed" else []
             )
+            if backfill_scope == "changed" and changed_names:
+                logger.info(
+                    "Backfill scope is changed. Models: %s",
+                    ", ".join(changed_names),
+                )
+                plan = run_ctx.plan(**plan_kwargs, backfill_models=changed_names)
+            elif backfill_scope == "changed" and preview.has_changes:
+                logger.info(
+                    "Plan changes include no models to backfill. "
+                    "Applying the environment update without a backfill."
+                )
+                plan = run_ctx.plan(**plan_kwargs, skip_backfill=True)
+            else:
+                plan = preview
             plan_duration = time.time() - plan_start
             logger.info("Plan computed in %.2fs", plan_duration)
 
             if log_details:
+                logger.info("  - backfill_scope: %s", backfill_scope)
                 logger.info("  - has_changes: %s", plan.has_changes)
                 logger.info("  - requires_backfill: %s", plan.requires_backfill)
+                if changed_names:
+                    logger.info("  - backfill models: %s", ", ".join(changed_names))
                 if plan.new_snapshots:
                     logger.info("  - new_snapshots: %s", len(plan.new_snapshots))
                 if plan.modified_snapshots:
                     logger.info("  - modified_snapshots: %s", len(plan.modified_snapshots))
-                if plan.missing_intervals:
-                    logger.info(
-                        "  - missing_intervals: %s model(s)",
-                        len(plan.missing_intervals),
-                    )
+                interval_count = _missing_interval_count(plan)
+                if interval_count:
+                    logger.info("  - intervals to backfill: %s", interval_count)
 
-            if not plan.has_changes and not plan.requires_backfill:
+            nothing_to_publish = (
+                backfill_scope == "changed" and not changed_names and not preview.has_changes
+            ) or (backfill_scope == "all" and not plan.has_changes and not plan.requires_backfill)
+            if nothing_to_publish:
                 total_duration = time.time() - start_time
-                logger.info("No model changes detected, skipping apply")
+                if backfill_scope == "changed" and preview.requires_backfill:
+                    logger.info(
+                        "No added or directly modified models. "
+                        "Interval gaps on other models stay for the pipeline."
+                    )
+                else:
+                    logger.info("No model changes detected, skipping apply")
                 logger.info("Total time: %.2fs", total_duration)
                 return {
                     "status": "skipped",
@@ -1772,6 +1874,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     "duration_seconds": total_duration,
                     "context_load_seconds": ctx_duration,
                     "plan_compute_seconds": plan_duration,
+                    "backfill_models": changed_names,
                 }
 
             if effective_plan_only:
@@ -1781,6 +1884,8 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     logger.info("  - Would apply model changes")
                 if plan.requires_backfill:
                     logger.info("  - Would run backfill")
+                if changed_names:
+                    logger.info("  - Would backfill: %s", ", ".join(changed_names))
                 logger.info("Total time: %.2fs", total_duration)
                 return {
                     "status": "plan_only",
@@ -1788,6 +1893,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     "has_changes": plan.has_changes,
                     "requires_backfill": plan.requires_backfill,
                     "duration_seconds": total_duration,
+                    "backfill_models": changed_names,
                 }
 
             if effective_skip_backfill and plan.requires_backfill:
@@ -1801,12 +1907,20 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     "has_changes": plan.has_changes,
                     "requires_backfill": plan.requires_backfill,
                     "duration_seconds": total_duration,
+                    "backfill_models": changed_names,
                 }
 
             logger.info("Phase 3/3: Applying plan...")
             if plan.has_changes:
                 logger.info("  - Applying model changes...")
-            if plan.requires_backfill:
+            if changed_names:
+                logger.info(
+                    "  - Backfilling %s model(s): %s",
+                    len(changed_names),
+                    ", ".join(changed_names),
+                )
+                logger.info("  - Intervals to backfill: %s", _missing_interval_count(plan))
+            elif plan.requires_backfill:
                 logger.info("  - Running backfill (this may take a while)...")
 
             apply_start = time.time()
@@ -1824,6 +1938,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 "context_load_seconds": ctx_duration,
                 "plan_compute_seconds": plan_duration,
                 "apply_seconds": apply_duration,
+                "backfill_models": changed_names,
             }
 
         if execution_timeout is None:
@@ -1831,12 +1946,15 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             if replan_timeout_hours is not None:
                 execution_timeout = timedelta(hours=replan_timeout_hours)
 
-        task = PythonOperator(
-            task_id=task_id,
-            python_callable=run_plan_apply,
-            dag=dag,
-            execution_timeout=execution_timeout,
-        )
+        operator_kwargs: Dict[str, Any] = {
+            "task_id": task_id,
+            "python_callable": run_plan_apply,
+            "dag": dag,
+            "execution_timeout": execution_timeout,
+        }
+        if task_display_name and supports_task_display_name():
+            operator_kwargs["task_display_name"] = task_display_name
+        task = PythonOperator(**operator_kwargs)
 
         if execution_timeout is None:
             logger.info("Created plan/apply task: %s (timeout: disabled)", task_id)

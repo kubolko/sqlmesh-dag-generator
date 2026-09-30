@@ -75,7 +75,7 @@ class SQLMeshConfig:
         # This is likely a misconfiguration - users probably meant to use 'gateway' instead
         if self.environment and self.environment != "":
             warnings.warn(
-                f"\n{'='*80}\n"
+                f"\n{'=' * 80}\n"
                 f"WARNING: environment='{self.environment}' detected!\n\n"
                 f"SQLMesh 'environment' is a VIRTUAL ENVIRONMENT for testing changes,\n"
                 f"not a way to switch between dev/staging/prod.\n\n"
@@ -85,7 +85,7 @@ class SQLMeshConfig:
                 f"Current config will try to run against virtual environment '{self.environment}'.\n"
                 f"If this environment doesn't exist, you'll get: \"Environment '{self.environment}' was not found\"\n\n"
                 f"See docs/ENVIRONMENTS.md for complete explanation.\n"
-                f"{'='*80}\n",
+                f"{'=' * 80}\n",
                 UserWarning,
                 stacklevel=2,
             )
@@ -103,7 +103,7 @@ class RecoveryConfig:
         valid_modes = {"disabled", "warn", "bounded_auto"}
         if self.mode not in valid_modes:
             raise ValueError(
-                f"Unsupported recovery mode: {self.mode}. " f"Must be one of: {sorted(valid_modes)}"
+                f"Unsupported recovery mode: {self.mode}. Must be one of: {sorted(valid_modes)}"
             )
         if self.max_intervals < 1:
             raise ValueError("recovery.max_intervals must be >= 1")
@@ -234,6 +234,48 @@ class DAGGroupConfig:
             )
 
 
+# Coarsest last. A FULL model must sit at or above generation.model_checks.full_min_interval.
+_INTERVAL_UNITS = (
+    "five_minute",
+    "quarter_hour",
+    "half_hour",
+    "hour",
+    "day",
+    "month",
+    "year",
+)
+_BACKFILL_SCOPES = {"changed", "all"}
+
+
+@dataclass
+class ModelChecksConfig:
+    """
+    Opt-in checks run when a SQLMesh project is loaded.
+
+    Both stay off unless a project turns them on. ``when_matched`` is not here:
+    that check follows the warehouse and is always on.
+    """
+
+    require_explicit_start: bool = False
+    # None disables the check. Otherwise a FULL model's cron must be this coarse
+    # or coarser (``day`` rejects ``*/10``).
+    full_min_interval: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.full_min_interval is None:
+            return
+        unit = str(self.full_min_interval).strip().lower()
+        if not unit:
+            self.full_min_interval = None
+            return
+        if unit not in _INTERVAL_UNITS:
+            allowed = ", ".join(_INTERVAL_UNITS)
+            raise ValueError(
+                f"Unsupported full_min_interval: {self.full_min_interval}. Must be one of: {allowed}"
+            )
+        self.full_min_interval = unit
+
+
 @dataclass
 class GenerationConfig:
     """DAG generation settings"""
@@ -303,6 +345,13 @@ class GenerationConfig:
     # SQLMesh chase upstream again duplicates work. Off by default to keep the
     # behaviour of existing DAGs unchanged.
     no_auto_upstream: bool = False
+    # Publish backfill. ``changed`` (default) backfills models added or directly
+    # modified by this plan. ``all`` backfills every model with missing intervals,
+    # which is what ``plan()`` does on a production environment.
+    backfill_scope: str = "changed"
+    model_checks: Union[Dict[str, Any], ModelChecksConfig] = field(
+        default_factory=ModelChecksConfig
+    )
 
     def __post_init__(self) -> None:
         # Normalize model_triggers so consumers always see ModelTriggerConfig
@@ -311,6 +360,17 @@ class GenerationConfig:
             override if isinstance(override, TaskOverride) else TaskOverride(**override)
             for override in (self.task_overrides or [])
         ]
+        if isinstance(self.model_checks, dict):
+            self.model_checks = ModelChecksConfig(**self.model_checks)
+        elif self.model_checks is None:
+            self.model_checks = ModelChecksConfig()
+        scope = str(self.backfill_scope or "changed").strip().lower()
+        if scope not in _BACKFILL_SCOPES:
+            raise ValueError(
+                f"Unsupported backfill_scope: {self.backfill_scope}. "
+                f"Must be one of: {', '.join(sorted(_BACKFILL_SCOPES))}"
+            )
+        self.backfill_scope = scope
 
 
 @dataclass
@@ -470,6 +530,11 @@ class DAGGeneratorConfig:
                 "model_docs": self.generation.model_docs,
                 "audit_tasks": self.generation.audit_tasks,
                 "no_auto_upstream": self.generation.no_auto_upstream,
+                "backfill_scope": self.generation.backfill_scope,
+                "model_checks": {
+                    "require_explicit_start": self.generation.model_checks.require_explicit_start,
+                    "full_min_interval": self.generation.model_checks.full_min_interval,
+                },
             },
             "selectors": dict(self.selectors or {}),
             "dag_groups": [asdict(g) for g in self.dag_groups],

@@ -5,6 +5,8 @@ Tests for configuration module
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from sqlmesh_dag_generator.config import (
     AirflowConfig,
     DAGGeneratorConfig,
@@ -57,6 +59,35 @@ def test_generation_config_defaults():
     assert config.operator_type == "python"
     assert config.include_tests is False
     assert config.parallel_tasks is True
+    assert config.backfill_scope == "changed"
+    assert config.model_checks.require_explicit_start is False
+    assert config.model_checks.full_min_interval is None
+
+
+def test_backfill_scope_and_model_checks_round_trip():
+    """New publish settings survive save/load and reject unknown values."""
+    config = DAGGeneratorConfig(
+        sqlmesh=SQLMeshConfig(project_path="/test"),
+        airflow=AirflowConfig(dag_id="test_dag"),
+        generation=GenerationConfig(
+            backfill_scope="all",
+            model_checks={"require_explicit_start": True, "full_min_interval": "day"},
+        ),
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        config_file = Path(tmpdir) / "test_config.yaml"
+        config.save(str(config_file))
+        loaded = DAGGeneratorConfig.from_file(str(config_file))
+
+    assert loaded.generation.backfill_scope == "all"
+    assert loaded.generation.model_checks.require_explicit_start is True
+    assert loaded.generation.model_checks.full_min_interval == "day"
+
+    with pytest.raises(ValueError, match="backfill_scope"):
+        GenerationConfig(backfill_scope="holes")
+    with pytest.raises(ValueError, match="full_min_interval"):
+        GenerationConfig(model_checks={"full_min_interval": "weekly"})
 
 
 def test_dag_generator_config_from_dict():

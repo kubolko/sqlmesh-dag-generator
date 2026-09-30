@@ -5,9 +5,11 @@ Provides dependency validation, resource checks, and model validation.
 """
 
 import logging
+import re
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
+from sqlmesh_dag_generator.config import ModelChecksConfig
 from sqlmesh_dag_generator.models import SQLMeshModelInfo
 
 logger = logging.getLogger(__name__)
@@ -215,13 +217,239 @@ def validate_project_structure(project_path: str) -> None:
     model_count = len(model_files)
 
     if model_count == 0:
-        logger.warning(
-            f"No model files found in {models_dir}\n" f"   Directory exists but is empty.\n"
-        )
+        logger.warning(f"No model files found in {models_dir}\n   Directory exists but is empty.\n")
     else:
         logger.debug(f"Found {model_count} model files in {models_dir}")
 
     logger.info(f"SQLMesh project structure validated: {project_path}")
+
+
+# Warehouses whose adapter rejects when_matched (LogicalMergeMixin, or Redshift
+# unless the connection sets enable_merge). Postgres is version-dependent and
+# is intentionally absent: blocking DAG parse would need a live server version.
+_NO_MERGE_DIALECTS = frozenset({"mysql", "duckdb", "clickhouse", "starrocks"})
+_MERGE_DIALECTS = frozenset(
+    {
+        "snowflake",
+        "bigquery",
+        "databricks",
+        "spark",
+        "hive",
+        "mssql",
+        "fabric",
+        "trino",
+        "athena",
+    }
+)
+_POLICY_SKIP_KINDS = frozenset({"VIEW", "SEED", "EXTERNAL", "EMBEDDED"})
+_START_PROPERTY = re.compile(r"(?im)^\s*start\b")
+_PYTHON_START = re.compile(r"(?m)^\s*start\s*=")
+
+
+def connection_dialect(connection: Any) -> Optional[str]:
+    """Warehouse type from a SQLMesh gateway connection, without opening it."""
+    if connection is None:
+        return None
+    if isinstance(connection, dict):
+        raw = connection.get("type") or connection.get("dialect")
+    else:
+        raw = (
+            getattr(connection, "type_", None)
+            or getattr(connection, "type", None)
+            or getattr(connection, "DIALECT", None)
+        )
+    if raw is None:
+        return None
+    return str(getattr(raw, "value", raw)).strip().lower() or None
+
+
+def engine_runs_merge(connection: Any) -> Optional[bool]:
+    """
+    Whether ``when_matched`` can run on this connection.
+
+    ``None`` means the dialect is unknown or version-dependent. Callers leave
+    those models alone so DAG parse does not fail on a guess.
+    """
+    dialect = connection_dialect(connection)
+    if dialect in {None, "postgres", "postgresql", "risingwave"}:
+        return None
+    if dialect == "redshift":
+        if isinstance(connection, dict):
+            return bool(connection.get("enable_merge"))
+        return bool(getattr(connection, "enable_merge", False))
+    if dialect in _NO_MERGE_DIALECTS:
+        return False
+    if dialect in _MERGE_DIALECTS:
+        return True
+    return None
+
+
+def validate_loaded_models(
+    context: Any,
+    *,
+    gateway: Optional[str],
+    checks: ModelChecksConfig,
+) -> None:
+    """
+    Raise when a loaded project breaks the publish contract.
+
+    ``when_matched`` is checked against the gateway connection. The start and
+    FULL-cron checks run only when ``checks`` turns them on. VIEW, SEED and
+    external models are skipped for those two.
+    """
+    models = getattr(context, "models", None) or getattr(context, "_models", None) or {}
+    errors: List[str] = []
+    try:
+        items = list(models.items())
+    except Exception:
+        items = []
+    for name, model in items:
+        connection = _connection_for_model(context, gateway, model)
+        errors.extend(model_contract_errors(str(name), model, connection, checks))
+    if errors:
+        raise ValueError("SQLMesh model checks failed:\n" + "\n".join(f"- {err}" for err in errors))
+
+
+def model_contract_errors(
+    name: str,
+    model: Any,
+    connection: Any,
+    checks: ModelChecksConfig,
+) -> List[str]:
+    """Sentences for one model. Empty when the model can be published."""
+    errors: List[str] = []
+    when_matched = getattr(model, "when_matched", None)
+    if when_matched and engine_runs_merge(connection) is False:
+        errors.append(f"This engine does not run MERGE. Remove `when_matched` from `{name}`.")
+
+    if _skips_policy_checks(model):
+        return errors
+
+    if checks.full_min_interval and _is_full(model):
+        unit = _interval_name(model)
+        if unit is not None and _finer_than(unit, checks.full_min_interval):
+            errors.append(
+                "FULL rebuilds the whole table on every interval. "
+                f"Set cron to `{checks.full_min_interval}` or coarser on `{name}`."
+            )
+
+    if checks.require_explicit_start and not _model_declares_start(model):
+        errors.append(
+            f"Set `start` on `{name}`. Without it, backfill begins at the project default."
+        )
+    return errors
+
+
+def _connection_for_model(context: Any, gateway: Optional[str], model: Any) -> Any:
+    config = getattr(context, "config", None)
+    gateways = getattr(config, "gateways", None) if config is not None else None
+    if not hasattr(gateways, "get"):
+        return None
+    model_gateway = getattr(model, "gateway", None) or None
+    name = model_gateway or gateway or getattr(config, "default_gateway", None)
+    chosen = gateways.get(name) if name else None
+    if chosen is None and gateway:
+        chosen = gateways.get(gateway)
+    if chosen is None:
+        return None
+    return getattr(chosen, "connection", None)
+
+
+def _kind_name(model: Any) -> str:
+    kind = getattr(model, "kind", None)
+    if kind is None:
+        return str(getattr(model, "kind_name", "") or "").upper()
+    raw = getattr(kind, "model_kind_name", None)
+    if raw is None:
+        raw = getattr(kind, "name", "")
+    return str(getattr(raw, "value", raw) or "").upper()
+
+
+def _skips_policy_checks(model: Any) -> bool:
+    kind = getattr(model, "kind", None)
+    if kind is not None and any(
+        getattr(kind, attr, False)
+        for attr in ("is_view", "is_seed", "is_external", "is_symbolic", "is_embedded")
+    ):
+        return True
+    return _kind_name(model) in _POLICY_SKIP_KINDS
+
+
+def _is_full(model: Any) -> bool:
+    kind = getattr(model, "kind", None)
+    if kind is not None and getattr(kind, "is_full", False):
+        return True
+    return _kind_name(model) == "FULL"
+
+
+def _interval_name(model: Any) -> Optional[str]:
+    from sqlmesh_dag_generator.config import _INTERVAL_UNITS
+
+    unit = getattr(model, "interval_unit", None)
+    if unit is None:
+        return None
+    name = str(getattr(unit, "value", unit)).strip().lower()
+    if name not in _INTERVAL_UNITS:
+        return None
+    return name
+
+
+def _finer_than(unit: str, minimum: str) -> bool:
+    from sqlmesh_dag_generator.config import _INTERVAL_UNITS
+
+    return _INTERVAL_UNITS.index(unit) < _INTERVAL_UNITS.index(minimum)
+
+
+def _model_declares_start(model: Any) -> bool:
+    """True when the model's own file contains ``start``, not an inherited default."""
+    path = getattr(model, "_path", None) or getattr(model, "path", None)
+    if not path:
+        return False
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    block = _extract_model_block(text)
+    if block is not None:
+        return _START_PROPERTY.search(_strip_sql_comments(block)) is not None
+    return _PYTHON_START.search(text) is not None
+
+
+def _strip_sql_comments(text: str) -> str:
+    without_block = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+    return re.sub(r"--[^\n]*", "", without_block)
+
+
+def _extract_model_block(text: str) -> Optional[str]:
+    match = re.search(r"(?i)\bMODEL\s*\(", text)
+    if match is None:
+        return None
+    depth = 1
+    index = match.end()
+    quote: Optional[str] = None
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            if char == quote and text[index - 1] != "\\":
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if text.startswith("--", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return text[match.end() : index]
+        index += 1
+    return text[match.end() :]
 
 
 def estimate_dag_complexity(models: Dict[str, SQLMeshModelInfo]) -> Dict[str, any]:
