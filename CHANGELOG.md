@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-30
+
+### Changed
+- **Publish backfills changed models.** `create_plan_apply_task` defaults to
+  `generation.backfill_scope: changed`. It plans once, then applies a second plan
+  whose `backfill_models` are the models added or directly modified in that diff.
+  Interval gaps on every other model stay for the interval DAG. Projects that
+  want the old behaviour (one `plan()`, backfill every gap) set
+  `generation.backfill_scope: all`.
+- A diff that only removes or updates metadata is applied with `skip_backfill`,
+  so the environment still updates and unrelated gaps are left alone.
+  `backfill_models: []` is never sent: SQLMesh reads an empty selection as
+  "backfill everything".
+
+### Added
+- `generation.model_checks.require_explicit_start` (default `false`). When on, a
+  materialized model must contain its own `start` line in the `MODEL` block.
+  A `start` inherited from `model_defaults` does not count. `VIEW`, `SEED` and
+  external models are skipped.
+- `generation.model_checks.full_min_interval` (default off). When set, a `FULL`
+  model whose cron is finer than that unit fails at load. `day` rejects a
+  10-minute `FULL`.
+- `when_matched` is rejected at load when the gateway cannot run `MERGE`
+  (Redshift unless `enable_merge` is set; MySQL, DuckDB, ClickHouse, StarRocks).
+  Snowflake and the other native-`MERGE` warehouses pass. Postgres is left
+  alone: support depends on the server version, and DAG parse does not connect
+  to find it.
+- `create_plan_apply_task(..., task_display_name=)` is forwarded to
+  `PythonOperator` on Airflow 2.9+ and 3.x, and omitted on older 2.x.
+
 ## [0.10.1] - 2026-09-23
 
 ### Fixed

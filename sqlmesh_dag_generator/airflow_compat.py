@@ -121,6 +121,23 @@ def dag_schedule_kwargs(schedule: Any) -> Dict[str, Any]:
     return {"schedule": schedule}
 
 
+def supports_task_display_name() -> bool:
+    """True when ``PythonOperator`` accepts ``task_display_name`` (Airflow 2.9+ / 3)."""
+    import inspect
+
+    for cls in PythonOperator.__mro__:
+        init = getattr(cls, "__init__", None)
+        if init is None:
+            continue
+        try:
+            params = inspect.signature(init).parameters
+        except (TypeError, ValueError):
+            continue
+        if "task_display_name" in params:
+            return True
+    return False
+
+
 def is_airflow_3() -> bool:
     """Return True when running under Airflow 3.x."""
     try:
@@ -145,4 +162,5 @@ __all__ = [
     "is_airflow_3",
     "make_dataset",
     "supports_datasets",
+    "supports_task_display_name",
 ]

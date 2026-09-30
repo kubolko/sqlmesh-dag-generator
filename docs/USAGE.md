@@ -174,6 +174,31 @@ Airflow Graph View:
 
 ---
 
+## Publishing model changes
+
+`create_plan_apply_task` is the deploy path: one Airflow task that plans and
+applies. From 0.11.0 the default backfill is the models this plan adds or
+directly modifies (`generation.backfill_scope: changed`). A model that merely
+has a hole in its intervals is left for the interval DAG.
+
+```yaml
+generation:
+  backfill_scope: changed   # default; all = backfill every interval gap
+  model_checks:
+    require_explicit_start: false   # true = each materialized model has its own start
+    full_min_interval: null         # day = FULL cron must be daily or coarser
+```
+
+`when_matched` is checked on every load. The task fails with one sentence when
+the warehouse does not run `MERGE` (Redshift without `enable_merge`, MySQL,
+DuckDB, ClickHouse, StarRocks). Warehouses that run `MERGE`, such as Snowflake,
+are unchanged. The start and `FULL` checks stay off until a project opts in, so
+an hourly `FULL` model or a `start` that lives only in `model_defaults` keeps
+working after the upgrade.
+
+`plan_only` and `skip_backfill` are still operator switches, in the generator
+config or `dag_run.conf`.
+
 ## Troubleshooting
 
 ### "Failed to load SQLMesh context"
