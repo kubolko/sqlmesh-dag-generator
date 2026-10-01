@@ -224,8 +224,9 @@ def resolve_credentials(
     if callable(source) and not hasattr(source, "conn_type"):
         return resolve_credentials(source(), resolver_type=resolver_type)
 
-    # If already a dict, return as-is
-    if isinstance(source, dict):
+    # A dict is a finished connection config - unless a resolver was asked for
+    # explicitly: resolver_type="env" maps config keys to environment variable names.
+    if isinstance(source, dict) and resolver_type is None:
         return source
 
     # Auto-detect resolver type if not provided

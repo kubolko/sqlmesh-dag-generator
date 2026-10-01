@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `source__` for external models.
 
 ### Fixed
+- `resolve_credentials(dict, resolver_type="env")` returned the dict of variable
+  names unchanged, so `credential_resolver="env"` never read the environment.
+  A dict is now passed through only when no resolver is named; with one, the
+  resolver runs. A ready-made connection dict with no `credential_resolver`
+  behaves as before.
 - Generated Bash DAGs were invalid Python for any real project: the quoted
   model FQN (`"db"."schema"."table"`) closed the `bash_command` string. The
   command is now written with `repr()` and the model and project path are
