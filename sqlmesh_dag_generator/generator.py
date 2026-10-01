@@ -35,6 +35,101 @@ logger = logging.getLogger(__name__)
 # Install credential filter globally on first import
 install_credential_filter()
 
+# Every keyword SQLMeshDAGGenerator(**kwargs) understands. Anything else is a typo or
+# an option from a newer release, and used to be dropped without a word - which is
+# how a DAG written for 0.11 kept "working" on 0.9.15 with half its settings gone.
+_GENERATOR_KWARGS = frozenset(
+    {
+        "audit_tasks",
+        "auto_replan_on_change",
+        "backfill_scope",
+        "catchup",
+        "config_overrides",
+        "config_path",
+        "description",
+        "docker_image",
+        "dry_run",
+        "env_vars",
+        "max_parallel_tasks",
+        "mode",
+        "namespace",
+        "start_date",
+        "credential_resolver",
+        "dag_groups",
+        "dag_tick_minutes",
+        "dataset_uri_prefix",
+        "default_args",
+        "default_catalog",
+        "emit_datasets",
+        "enable_health_check",
+        "environment",
+        "exclude",
+        "exclude_models",
+        "exclude_tags",
+        "gateway",
+        "include_models",
+        "include_source_tables",
+        "include_tags",
+        "include_tests",
+        "interval_window",
+        "log_plan_details",
+        "max_active_runs",
+        "model_checks",
+        "model_docs",
+        "model_pattern",
+        "model_triggers",
+        "no_auto_upstream",
+        "on_failure_callback",
+        "on_success_callback",
+        "operator_type",
+        "output_dir",
+        "parallel_tasks",
+        "parse_connection",
+        "plan_only",
+        "pool",
+        "pool_slots",
+        "recovery_fail_on_excess_gap",
+        "recovery_max_intervals",
+        "recovery_mode",
+        "replan_timeout_hours",
+        "resolve_connections",
+        "return_value",
+        "select",
+        "selectors",
+        "skip_audits",
+        "skip_backfill",
+        "skip_if_not_due",
+        "sla",
+        "sla_miss_callback",
+        "tags",
+        "task_display_names",
+        "task_id_prefix",
+        "task_overrides",
+        "trigger_dag_conf",
+        "trigger_dag_id",
+    }
+)
+
+
+def _check_generator_kwargs(kwargs: Dict[str, Any]) -> None:
+    """Fail on keyword arguments this version does not understand."""
+    import difflib
+
+    unknown = sorted(set(kwargs) - _GENERATOR_KWARGS)
+    if not unknown:
+        return
+    hints = []
+    for name in unknown:
+        close = difflib.get_close_matches(name, _GENERATOR_KWARGS, n=1)
+        hints.append(f"{name} (did you mean {close[0]}?)" if close else name)
+    from sqlmesh_dag_generator import __version__
+
+    raise TypeError(
+        f"SQLMeshDAGGenerator got unknown argument(s): {', '.join(hints)}. "
+        f"Installed sqlmesh-dag-generator is {__version__}; an option from a newer "
+        "release means the installed package is older than the DAG expects."
+    )
+
 
 def _directly_changed_model_names(plan: Any) -> List[str]:
     """Models added or directly modified on a SQLMesh plan.
@@ -192,27 +287,42 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 credential_resolver="aws_secrets",
             )
         """
+        _check_generator_kwargs(kwargs)
+
         # Resolve credentials if provided
         resolved_connection = None
         resolved_state_connection = None
         credential_resolver = kwargs.get("credential_resolver")
+        resolve_connections = str(kwargs.get("resolve_connections") or "parse").strip().lower()
 
-        if connection is not None:
-            # Validate security before resolving
-            validate_connection_security(connection)
+        # Kept for tasks when resolve_connections="task": they are resolved there,
+        # right before SQLMesh opens a session, and never while the DAG is parsed.
+        self._task_connection = connection
+        self._task_state_connection = state_connection
+        self._credential_resolver = credential_resolver
+        self._task_connections_ready = False
 
-            from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+        from sqlmesh_dag_generator.airflow_utils import resolve_credentials
 
-            resolved_connection = resolve_credentials(connection, resolver_type=credential_resolver)
+        if resolve_connections == "task":
+            parse_connection = kwargs.get("parse_connection")
+            if parse_connection is not None:
+                resolved_connection = resolve_credentials(
+                    parse_connection, resolver_type=credential_resolver
+                )
+        else:
+            if connection is not None:
+                # Validate security before resolving
+                validate_connection_security(connection)
+                resolved_connection = resolve_credentials(
+                    connection, resolver_type=credential_resolver
+                )
 
-        if state_connection is not None:
-            validate_connection_security(state_connection)
-
-            from sqlmesh_dag_generator.airflow_utils import resolve_credentials
-
-            resolved_state_connection = resolve_credentials(
-                state_connection, resolver_type=credential_resolver
-            )
+            if state_connection is not None:
+                validate_connection_security(state_connection)
+                resolved_state_connection = resolve_credentials(
+                    state_connection, resolver_type=credential_resolver
+                )
 
         if config:
             self.config = config
@@ -227,11 +337,16 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 connection_config=resolved_connection,
                 state_connection_config=resolved_state_connection,
                 default_catalog=kwargs.get("default_catalog"),
+                config_path=kwargs.get("config_path"),
                 config_overrides=kwargs.get("config_overrides", {}),
+                resolve_connections=resolve_connections,
             )
 
             airflow_config = AirflowConfig(
                 dag_id=dag_id or "sqlmesh_dag",
+                start_date=kwargs.get("start_date"),
+                description=kwargs.get("description"),
+                env_vars=kwargs.get("env_vars") or {},
                 schedule_interval=schedule_interval,
                 auto_schedule=auto_schedule if schedule_interval is None else False,
                 default_args=kwargs.get("default_args", {}),
@@ -253,6 +368,11 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
             generation_config = GenerationConfig(
                 output_dir=kwargs.get("output_dir", "./dags"),
+                mode=kwargs.get("mode", "dynamic"),
+                dry_run=kwargs.get("dry_run", False),
+                docker_image=kwargs.get("docker_image"),
+                namespace=kwargs.get("namespace", "default"),
+                max_parallel_tasks=kwargs.get("max_parallel_tasks"),
                 operator_type=kwargs.get("operator_type", "python"),
                 include_tests=kwargs.get("include_tests", False),
                 parallel_tasks=kwargs.get("parallel_tasks", True),
@@ -310,6 +430,11 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         # it (a DAG group). Without it, a model owned by another group looks like
         # a raw source table and gets a misleading placeholder task.
         self.project_model_keys: Optional[set] = None
+        # External models of the whole project, for the same reason: in a group
+        # slice an external read by this group may not be in self.models.
+        self.project_external_keys: Optional[set] = None
+        # Tasks made by the last create_tasks_in_dag call, by model key (see select_tasks).
+        self._dag_tasks: Optional[Dict[str, Any]] = None
         self.dag_structure: Optional[DAGStructure] = None
         self.merged_config = None  # Store merged config for runtime task execution
         self.runtime_gateway = None  # Store gateway name for runtime task execution
@@ -336,6 +461,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             SQLMesh Context object
         """
         from sqlmesh_dag_generator.validation import (
+            check_external_models_layout,
             check_resource_availability,
             validate_project_structure,
         )
@@ -344,13 +470,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         # Validate project structure first
         validate_project_structure(self.config.sqlmesh.project_path)
+        for problem in check_external_models_layout(self.config.sqlmesh.project_path):
+            logger.warning(problem)
 
         # Check system resources
         check_resource_availability()
 
         try:
-            import os
-
             # Build context kwargs
             context_kwargs = {
                 "paths": self.config.sqlmesh.project_path,
@@ -361,111 +487,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             if self.config.sqlmesh.config_path:
                 context_kwargs["config"] = self.config.sqlmesh.config_path
 
-            # If runtime connection config is provided, we need to merge it with the config
-            # Also check for SQLMESH_CACHE_DIR environment variable
-            cache_dir = os.environ.get("SQLMESH_CACHE_DIR")
-
-            if (
-                self.config.sqlmesh.connection_config
-                or self.config.sqlmesh.state_connection_config
-                or self.config.sqlmesh.config_overrides
-                or cache_dir
-            ):
-                from sqlmesh.core.config import Config
-
-                # Determine gateway name for runtime connections
-                # If gateway is not specified, use "default" as the gateway name
-                gateway_name = self.config.sqlmesh.gateway or "default"
-
-                # Start with a minimal base config dict
-                config_dict = {
-                    "gateways": {},
-                    "default_gateway": gateway_name,
-                }
-
-                # Try to load existing config to preserve other settings
-                # (Config.load was removed in modern SQLMesh; use sqlmesh_compat)
-                try:
-                    from sqlmesh_dag_generator.sqlmesh_compat import (
-                        config_to_dict,
-                        load_sqlmesh_config,
-                    )
-
-                    if self.config.sqlmesh.config_path:
-                        base_config = load_sqlmesh_config(self.config.sqlmesh.config_path)
-                    else:
-                        config_path = Path(self.config.sqlmesh.project_path) / "config.yaml"
-                        if config_path.exists():
-                            base_config = load_sqlmesh_config(config_path)
-                        else:
-                            base_config = None
-
-                    if base_config:
-                        # Merge settings from base config (but NOT gateway connections)
-                        base_dict = config_to_dict(base_config)
-                        for key in base_dict:
-                            if key not in ["gateways", "default_gateway"]:
-                                config_dict[key] = base_dict[key]
-                except Exception as e:
-                    logger.warning(f"Could not load base config, using minimal config: {e}")
-
-                logger.info(f"Configuring runtime connections for gateway: {gateway_name}")
-
-                # Create gateway config with runtime connections
-                if gateway_name not in config_dict["gateways"]:
-                    config_dict["gateways"][gateway_name] = {}
-
-                # Merge connection config for the gateway
-                if self.config.sqlmesh.connection_config:
-                    connection_config = self.config.sqlmesh.connection_config.copy()
-
-                    # Handle default_catalog for Redshift connections
-                    # For Redshift, keep default_catalog in connection config
-                    # SQLMesh uses this to determine which catalog to omit from SQL generation
-                    if connection_config.get("default_catalog"):
-                        logger.info(
-                            f"Redshift default_catalog: {connection_config['default_catalog']}"
-                        )
-
-                    config_dict["gateways"][gateway_name]["connection"] = connection_config
-                    logger.info(f"Runtime connection configured for gateway: {gateway_name}")
-                    logger.debug(f"Connection config: {connection_config}")
-
-                # Merge state connection config
-                if self.config.sqlmesh.state_connection_config:
-                    config_dict["gateways"][gateway_name][
-                        "state_connection"
-                    ] = self.config.sqlmesh.state_connection_config
-                    logger.info(f"Runtime state connection configured for gateway: {gateway_name}")
-                    logger.debug(
-                        f"State connection config: {self.config.sqlmesh.state_connection_config}"
-                    )
-
-                # Note: default_catalog is NOT a valid SQLMesh Config field.
-                # It is automatically determined from the database connection.
-                # If user passed default_catalog, log a warning but don't set it.
-                if self.config.sqlmesh.default_catalog:
-                    logger.warning(
-                        f"default_catalog='{self.config.sqlmesh.default_catalog}' was provided, "
-                        f"but this is not a SQLMesh config option. SQLMesh automatically determines "
-                        f"the default catalog from the database connection. This parameter will be ignored."
-                    )
-
-                # SQLMESH_CACHE_DIR moves the parse cache off the project directory.
-                if cache_dir:
-                    logger.info(
-                        "SQLMESH_CACHE_DIR is set to %s. Only needed when the project "
-                        "directory is read-only for workers; with a writable shared "
-                        "volume SQLMesh caches next to the project and stays in sync.",
-                        cache_dir,
-                    )
-
-                # Apply any other config overrides
-                if self.config.sqlmesh.config_overrides:
-                    self._deep_merge(config_dict, self.config.sqlmesh.config_overrides)
-
-                # Create new config from merged dict
-                merged_config = Config.parse_obj(config_dict)
+            # Runtime connections (and overrides) are merged into the project's config
+            built = self._build_merged_config(
+                self.config.sqlmesh.connection_config,
+                self.config.sqlmesh.state_connection_config,
+            )
+            if built is not None:
+                merged_config, gateway_name = built
                 context_kwargs["config"] = merged_config
                 self.merged_config = merged_config  # Store for runtime task execution
                 self.runtime_gateway = gateway_name  # Store gateway name for runtime
@@ -483,6 +511,147 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         except Exception as e:
             logger.error(f"Failed to load SQLMesh context: {e}")
             raise
+
+    def _build_merged_config(self, connection_config_in, state_connection_config_in):
+        """
+        SQLMesh ``Config`` with runtime connections merged into the gateway.
+
+        Returns ``(config, gateway_name)``, or None when there is nothing to merge
+        and the project's own config.yaml can be used as it is.
+        """
+        import os
+
+        cache_dir = os.environ.get("SQLMESH_CACHE_DIR")
+        if not (
+            connection_config_in
+            or state_connection_config_in
+            or self.config.sqlmesh.config_overrides
+            or cache_dir
+        ):
+            return None
+
+        from sqlmesh.core.config import Config
+
+        # Determine gateway name for runtime connections
+        # If gateway is not specified, use "default" as the gateway name
+        gateway_name = self.config.sqlmesh.gateway or "default"
+
+        # Start with a minimal base config dict
+        config_dict = {
+            "gateways": {},
+            "default_gateway": gateway_name,
+        }
+
+        # Try to load existing config to preserve other settings
+        # (Config.load was removed in modern SQLMesh; use sqlmesh_compat)
+        try:
+            from sqlmesh_dag_generator.sqlmesh_compat import (
+                config_to_dict,
+                load_sqlmesh_config,
+            )
+
+            if self.config.sqlmesh.config_path:
+                base_config = load_sqlmesh_config(self.config.sqlmesh.config_path)
+            else:
+                config_path = Path(self.config.sqlmesh.project_path) / "config.yaml"
+                if config_path.exists():
+                    base_config = load_sqlmesh_config(config_path)
+                else:
+                    base_config = None
+
+            if base_config:
+                # Merge settings from base config (but NOT gateway connections)
+                base_dict = config_to_dict(base_config)
+                for key in base_dict:
+                    if key not in ["gateways", "default_gateway"]:
+                        config_dict[key] = base_dict[key]
+        except Exception as e:
+            logger.warning(f"Could not load base config, using minimal config: {e}")
+
+        logger.info(f"Configuring runtime connections for gateway: {gateway_name}")
+
+        # Create gateway config with runtime connections
+        if gateway_name not in config_dict["gateways"]:
+            config_dict["gateways"][gateway_name] = {}
+
+        # Merge connection config for the gateway
+        if connection_config_in:
+            connection_config = connection_config_in.copy()
+
+            # Handle default_catalog for Redshift connections
+            # For Redshift, keep default_catalog in connection config
+            # SQLMesh uses this to determine which catalog to omit from SQL generation
+            if connection_config.get("default_catalog"):
+                logger.info(f"Redshift default_catalog: {connection_config['default_catalog']}")
+
+            config_dict["gateways"][gateway_name]["connection"] = connection_config
+            logger.info(f"Runtime connection configured for gateway: {gateway_name}")
+            logger.debug(f"Connection config: {connection_config}")
+
+        # Merge state connection config
+        if state_connection_config_in:
+            config_dict["gateways"][gateway_name]["state_connection"] = state_connection_config_in
+            logger.info(f"Runtime state connection configured for gateway: {gateway_name}")
+            logger.debug(f"State connection config: {state_connection_config_in}")
+
+        # Note: default_catalog is NOT a valid SQLMesh Config field.
+        # It is automatically determined from the database connection.
+        # If user passed default_catalog, log a warning but don't set it.
+        if self.config.sqlmesh.default_catalog:
+            logger.warning(
+                f"default_catalog='{self.config.sqlmesh.default_catalog}' was provided, "
+                f"but this is not a SQLMesh config option. SQLMesh automatically determines "
+                f"the default catalog from the database connection. This parameter will be ignored."
+            )
+
+        # SQLMESH_CACHE_DIR moves the parse cache off the project directory.
+        if cache_dir:
+            logger.info(
+                "SQLMESH_CACHE_DIR is set to %s. Only needed when the project "
+                "directory is read-only for workers; with a writable shared "
+                "volume SQLMesh caches next to the project and stays in sync.",
+                cache_dir,
+            )
+
+        # Apply any other config overrides
+        if self.config.sqlmesh.config_overrides:
+            self._deep_merge(config_dict, self.config.sqlmesh.config_overrides)
+
+        # Create new config from merged dict
+        return Config.parse_obj(config_dict), gateway_name
+
+    def _ensure_task_connections(self) -> None:
+        """
+        With ``resolve_connections="task"``, resolve the connections now - inside
+        the task - and rebuild the runtime SQLMesh config from them. Once per process.
+        """
+        if self.config.sqlmesh.resolve_connections != "task" or self._task_connections_ready:
+            return
+
+        from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+
+        connection = state_connection = None
+        if self._task_connection is not None:
+            connection = resolve_credentials(
+                self._task_connection, resolver_type=self._credential_resolver
+            )
+        if self._task_state_connection is not None:
+            state_connection = resolve_credentials(
+                self._task_state_connection, resolver_type=self._credential_resolver
+            )
+
+        built = self._build_merged_config(connection, state_connection)
+        if built is not None:
+            self.merged_config, self.runtime_gateway = built
+        self._task_connections_ready = True
+        logger.info("Connections resolved in the task (resolve_connections=task)")
+
+    def _prepare_runtime(self) -> None:
+        """Make the runtime SQLMesh config available inside a task."""
+        if self.config.sqlmesh.resolve_connections == "task":
+            self._ensure_task_connections()
+        elif self.merged_config is None:
+            self.load_sqlmesh_context()
 
     def _deep_merge(self, base_dict: Dict, override_dict: Dict) -> None:
         """Deep merge override_dict into base_dict"""
@@ -634,8 +803,11 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         lineage: Dict[str, Dict[str, List[str]]] = {
             name: {"reads_models": [], "reads_sources": [], "read_by": []} for name in self.models
         }
+        external_keys = self._external_model_keys()
         for name, info in self.models.items():
             for dep in info.dependencies:
+                if dep in external_keys:
+                    continue  # listed under reads_sources below
                 if dep in self.models:
                     lineage[name]["reads_models"].append(self.models[dep].display_name)
                     lineage[dep]["read_by"].append(info.display_name)
@@ -889,7 +1061,90 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             all_deps = normalize_depends_on(model.depends_on)
             source_tables = [dep for dep in all_deps if dep not in known_models]
 
+        # Declared external models are sources as well: SQLMesh knows their columns,
+        # but there is nothing to run for them.
+        external_keys = self._external_model_keys()
+        for dep in sorted(model_info.dependencies):
+            if dep in external_keys and dep not in source_tables:
+                source_tables.append(dep)
+
         return source_tables
+
+    def _no_auto_upstream_models(
+        self, target_models: Dict[str, SQLMeshModelInfo]
+    ) -> Dict[str, bool]:
+        """
+        Which model tasks may run with SQLMesh's ``no_auto_upstream``.
+
+        Only those whose upstream models are all tasks in this DAG: Airflow has then
+        run them first. Otherwise - a filtered DAG, a DAG group reading another
+        group's model - SQLMesh with ``no_auto_upstream`` processes the model's
+        intervals even when the upstream has no data for them yet, and marks them
+        done. Those models keep SQLMesh's default and fill the upstream themselves.
+        """
+        if not self.config.generation.no_auto_upstream:
+            return {}
+        known_models = self.project_model_keys or set(self.models)
+        externals = self._external_model_keys()
+        allowed: Dict[str, bool] = {}
+        for name, info in target_models.items():
+            outside = sorted(
+                dep
+                for dep in info.dependencies
+                if dep in known_models and dep not in externals and dep not in target_models
+            )
+            allowed[name] = not outside
+            if outside:
+                logger.info(
+                    "%s keeps SQLMesh auto-upstream: %s not in this DAG",
+                    info.display_name,
+                    ", ".join(d.replace('"', "") for d in outside),
+                )
+        return allowed
+
+    def select_tasks(
+        self,
+        select: Union[str, List[str], None],
+        exclude: Union[str, List[str], None] = None,
+    ) -> List[Any]:
+        """
+        The tasks ``create_tasks_in_dag`` made for the models a selection matches.
+
+        Lets DAG code attach things to a slice of the graph without guessing it from
+        roots or task ids::
+
+            refresh >> generator.select_tasks("interval:FIVE_MINUTE")
+
+        External models in the selection resolve to their source nodes. Models
+        without a task in this DAG (filtered out, or another DAG group's) are skipped.
+        """
+        if self._dag_tasks is None:
+            raise RuntimeError("select_tasks() needs create_tasks_in_dag() to have run first")
+        keys = select_models(
+            self.models,
+            select=[select] if isinstance(select, str) else select,
+            exclude=[exclude] if isinstance(exclude, str) else exclude,
+            named_selectors=self.config.selectors,
+        )
+        tasks = [self._dag_tasks[key] for key in keys if key in self._dag_tasks]
+        return sorted(tasks, key=lambda task: task.task_id)
+
+    def task_id_for(self, model_info: SQLMeshModelInfo) -> str:
+        """The Airflow task id this model gets: a source node for external models."""
+        if model_info.is_external():
+            return self._prefixed_task_id(f"source__{sanitize_task_id(model_info.name)}")
+        return self._prefixed_task_id(model_info.get_task_id())
+
+    def _external_model_keys(self) -> set:
+        """Keys of the project's external models (``external_models.yaml``)."""
+        if self.project_external_keys is not None:
+            return self.project_external_keys
+        return {name for name, info in self.models.items() if info.is_external()}
+
+    def _runnable_models(self, models: Optional[Dict[str, SQLMeshModelInfo]] = None):
+        """Models that get a task of their own: everything except external models."""
+        models = self.models if models is None else models
+        return {name: info for name, info in models.items() if not info.is_external()}
 
     def get_recommended_schedule(self) -> str:
         """
@@ -921,7 +1176,8 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             self.extract_models()
 
         # Collect all interval_units from models
-        interval_units = [model.interval_unit for model in self.models.values()]
+        # External models are never run, so their default cron must not set the schedule.
+        interval_units = [model.interval_unit for model in self._runnable_models().values()]
 
         # Get minimum interval and convert to cron
         from sqlmesh_dag_generator.utils import get_minimum_interval
@@ -954,7 +1210,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             self.extract_models()
 
         summary = {}
-        for model_name, model_info in self.models.items():
+        for model_name, model_info in self._runnable_models().items():
             interval_key = (
                 str(model_info.interval_unit) if model_info.interval_unit else "UNSCHEDULED"
             )
@@ -973,7 +1229,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         intervals = [
             get_interval_frequency_minutes(model.interval_unit)
-            for model in self.models.values()
+            for model in self._runnable_models().values()
             if model.interval_unit is not None
         ]
         return min(intervals) if intervals else None
@@ -1199,8 +1455,12 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         expected_interval_minutes = (
             configured_tick if configured_tick is not None else self.get_expected_interval_minutes()
         )
+        # External models have nothing to run; they appear as source nodes below.
+        external_targets = {k: v for k, v in target_models.items() if v.is_external()}
+        target_models = self._runnable_models(target_models)
         task_overrides = self._resolve_task_overrides(target_models)
         lineage = self._model_lineage()
+        no_auto_upstream_for = self._no_auto_upstream_models(target_models)
 
         # Step -1: Create Health Check Task (if enabled)
         health_check_task = None
@@ -1211,16 +1471,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                 logger.info("Running SQLMesh health check...")
 
-                # Build context kwargs
-                context_kwargs = {
-                    "paths": self.config.sqlmesh.project_path,
-                }
-                if self.merged_config is not None:
-                    context_kwargs["config"] = self.merged_config
-                    if self.runtime_gateway is not None:
-                        context_kwargs["gateway"] = self.runtime_gateway
-                else:
-                    context_kwargs["gateway"] = self.config.sqlmesh.gateway
+                context_kwargs = self._build_runtime_context_kwargs()
 
                 # Load context
                 ctx = Context(**context_kwargs)
@@ -1376,13 +1627,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                         recovery_end,
                     )
 
-                    context_kwargs = {"paths": self.config.sqlmesh.project_path}
-                    if self.merged_config is not None:
-                        context_kwargs["config"] = self.merged_config
-                        if self.runtime_gateway is not None:
-                            context_kwargs["gateway"] = self.runtime_gateway
-                    else:
-                        context_kwargs["gateway"] = self.config.sqlmesh.gateway
+                    context_kwargs = self._build_runtime_context_kwargs()
 
                     run_ctx = Context(**context_kwargs)
                     run_kwargs = {
@@ -1440,15 +1685,19 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 # This removes quotes, dots, and other invalid characters
                 task_id = self._prefixed_task_id(f"source__{sanitize_task_id(source_table)}")
 
+                external_info = external_targets.get(source_table) or self.models.get(source_table)
                 source_kwargs = self._display_name_kwargs(
                     display_label(
-                        source_table, source=True, prefix=self.config.generation.task_id_prefix
+                        getattr(external_info, "display_name", None) or source_table,
+                        source=True,
+                        prefix=self.config.generation.task_id_prefix,
                     )
                 )
                 if self.config.generation.model_docs:
                     source_kwargs["doc_md"] = source_doc_md(
                         source_table,
                         read_by=source_readers.get(source_table, []),
+                        external=external_info,
                     )
 
                 source_task = EmptyOperator(
@@ -1485,6 +1734,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 m_cron=None,
                 m_cron_tz=None,
                 m_summary=None,
+                m_no_auto_upstream=False,
             ):
                 def execute_model(**context):
                     # Get time interval (Airflow 2.2+)
@@ -1521,20 +1771,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                     from sqlmesh import Context
 
-                    # Build context kwargs - use merged config if available
-                    context_kwargs = {
-                        "paths": self.config.sqlmesh.project_path,
-                    }
-
-                    # Use merged config and runtime gateway if they were created
-                    if self.merged_config is not None:
-                        context_kwargs["config"] = self.merged_config
-                        # Use the runtime gateway name (where connections are configured)
-                        if self.runtime_gateway is not None:
-                            context_kwargs["gateway"] = self.runtime_gateway
-                    else:
-                        # Fallback to original gateway if no merged config
-                        context_kwargs["gateway"] = self.config.sqlmesh.gateway
+                    context_kwargs = self._build_runtime_context_kwargs()
 
                     # Load fresh context with runtime connections
                     run_ctx = Context(**context_kwargs)
@@ -1598,10 +1835,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                         # SQLMesh versions; supported_kwargs drops what is unknown.
                         if self.config.generation.skip_audits:
                             run_kwargs["skip_audits"] = True
-                        if self.config.generation.no_auto_upstream:
-                            # Airflow already runs the upstream tasks; letting SQLMesh
-                            # pull them in again duplicates work and can have two tasks
-                            # writing the same table at once.
+                        if m_no_auto_upstream:
+                            # Every upstream model is a task in this DAG that already
+                            # ran, so SQLMesh does not need to chase it again.
                             run_kwargs["no_auto_upstream"] = True
                         # SQLMesh janitors at the start of every prod run(). One
                         # DELETE on state._intervals per parallel task deadlocks
@@ -1692,6 +1928,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     model_info.cron,
                     model_info.cron_tz,
                     model_run_summary(model_info, **lineage.get(model_name, {})),
+                    no_auto_upstream_for.get(model_name, False),
                 ),
                 dag=dag,
                 **self._model_task_kwargs(model_info, task_overrides, lineage.get(model_name)),
@@ -1842,10 +2079,12 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         # Return all tasks (both models and source tables)
         all_tasks = {**tasks, **source_table_tasks}
+        self._dag_tasks = all_tasks
         return all_tasks
 
     def _build_runtime_context_kwargs(self) -> Dict[str, Any]:
         """Build SQLMesh Context kwargs using merged runtime connection config when available."""
+        self._ensure_task_connections()
         context_kwargs = {
             "paths": self.config.sqlmesh.project_path,
         }
@@ -1943,8 +2182,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             start_time = time.time()
 
             # Ensure runtime connection merge is available for this worker.
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
 
             logger.info("Phase 1/3: Loading SQLMesh context...")
             ctx_start = time.time()

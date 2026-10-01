@@ -20,12 +20,13 @@ Checked against SQLMesh 0.236.2 (September 2026) and dbt Core 1.11.
 | `no_auto_upstream` on model runs | SQLMesh 0.230+ |
 | Orchestration manifest and diff | dbt `manifest.json` |
 
-## Decided, waiting for the next release
+## Decided against
 
-**`no_auto_upstream` becomes the default in 0.11.0.** One Airflow task per model is
-the whole point of this package; SQLMesh re-resolving upstream inside each task is
-duplicated work at best and two writers on one table at worst. It ships opt-in in
-0.10.0 only so that a regression in this release is attributable to one change.
+**`no_auto_upstream` as the default.** It was planned for 0.11.0 and dropped in
+0.13.0 after testing it: with `no_auto_upstream`, SQLMesh processes a model's
+intervals even when an upstream model has no data for them yet, and marks them
+done (`tests/test_select_and_upstream.py` pins that behaviour). Opt-in remains,
+limited to models whose upstream models all run as tasks in the same DAG.
 
 ## From SQLMesh
 

@@ -213,13 +213,18 @@ def test_task_docs_on_a_real_project(tmp_path):
     events = dag.get_task("sqlmesh_memory_demo_events")
     assert "| Grain | `event_id` |" in events.doc_md
     assert "unique per message" in events.doc_md
-    assert "- `raw.event_hub`" in events.doc_md  # declared external = a model
+    # both the declared external and the undeclared table are sources of the model
+    assert "- `memory.raw.event_hub` (source)" in events.doc_md
     assert "- `memory.raw.undeclared_lookup` (source)" in events.doc_md
 
     source = dag.get_task("source__memory_raw_undeclared_lookup")
     assert "- `demo.events`" in source.doc_md
+    assert "create_external_models" in source.doc_md
 
-    # the external model's own card carries the types declared for it
-    external = dag.get_task("sqlmesh_memory_raw_event_hub")
-    assert "`EXTERNAL`" in external.doc_md
+    # the declared external is a source node too - nothing to run - with its columns
+    assert "sqlmesh_memory_raw_event_hub" not in dag.task_dict
+    external = dag.get_task("source__memory_raw_event_hub")
+    assert external.task_type == "EmptyOperator"
+    assert "| Declared in | `external_models.yaml` |" in external.doc_md
     assert "| `received_at` | `TIMESTAMP` |" in external.doc_md
+    assert "sqlmesh_memory_demo_events" in external.downstream_task_ids

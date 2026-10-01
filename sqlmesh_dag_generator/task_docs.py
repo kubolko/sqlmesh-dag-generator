@@ -150,29 +150,37 @@ def model_doc_md(
     return "\n".join(lines)
 
 
-def source_doc_md(table: str, *, read_by: Sequence[str] = ()) -> str:
+def source_doc_md(table: str, *, read_by: Sequence[str] = (), external=None) -> str:
     """
     Documentation card for a source-table task.
 
-    A source task exists because a model reads a table that the SQLMesh project
-    does not declare. Declared external models (``external_models.yaml``) are
-    already model tasks with their own card, columns included.
+    ``external`` is the table's :class:`SQLMeshModelInfo` when the project declares
+    it in ``external_models.yaml``; its description and columns go on the card.
+    Without it the table is one SQLMesh reads but knows nothing about.
     """
-    name = _unquote(table)
-    lines = [
-        f"### `{name}` (source)",
-        "",
-        "A table the SQLMesh models read but the project does not build or declare.",
+    name = getattr(external, "display_name", None) or _unquote(table)
+    lines = [f"### `{name}` (source)", ""]
+
+    description = getattr(external, "description", None)
+    if description:
+        lines += [description.strip(), ""]
+    lines += [
+        "A table the SQLMesh models read but do not build.",
         "This task only marks where the data enters the pipeline; it runs nothing.",
         "",
     ]
 
-    parts = name.split(".")
-    facts = [("Table", f"`{name}`")]
+    full_name = _unquote(table)
+    parts = full_name.split(".")
+    facts = [("Table", f"`{full_name}`")]
     if len(parts) == 3:
         facts += [("Catalog", f"`{parts[0]}`"), ("Schema", f"`{parts[1]}`")]
     elif len(parts) == 2:
         facts.append(("Schema", f"`{parts[0]}`"))
+    if external is not None:
+        facts.append(("Declared in", "`external_models.yaml`"))
+        if getattr(external, "owner", None):
+            facts.append(("Owner", _cell(external.owner)))
 
     lines += ["| | |", "|---|---|"]
     lines += [f"| {label} | {value} |" for label, value in facts]
@@ -181,11 +189,16 @@ def source_doc_md(table: str, *, read_by: Sequence[str] = ()) -> str:
         lines += ["", "#### Read by", ""]
         lines += _bullets(sorted(read_by))
 
-    lines += [
-        "",
-        "Declare it as a SQLMesh external model (`sqlmesh create_external_models`)",
-        "to get its columns and types documented here.",
-    ]
+    columns = getattr(external, "columns", None) or {}
+    if columns:
+        lines += ["", f"#### Columns ({len(columns)})", ""]
+        lines += _columns_table(columns, getattr(external, "column_descriptions", None))
+    elif external is None:
+        lines += [
+            "",
+            "Declare it as a SQLMesh external model (`sqlmesh create_external_models`)",
+            "to get its columns and types documented here.",
+        ]
     return "\n".join(lines)
 
 

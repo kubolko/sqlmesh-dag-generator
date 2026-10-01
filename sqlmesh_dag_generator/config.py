@@ -66,10 +66,25 @@ class SQLMeshConfig:
     config_overrides: Dict[str, Any] = field(
         default_factory=dict
     )  # Any other SQLMesh config overrides
+    # When the warehouse and state connections are resolved:
+    # ``parse`` (default) - while Airflow parses the DAG file, once per parse.
+    # ``task`` - inside each task, right before SQLMesh opens a session. The DAG
+    #   processor then never handles warehouse secrets; the project is loaded at
+    #   parse time with ``parse_connection`` (same type and database, secrets may
+    #   be placeholders) or, without it, with the project's own config.yaml.
+    resolve_connections: str = "parse"
 
     def __post_init__(self):
         """Validate configuration and show deprecation warnings"""
         import warnings
+
+        mode = str(self.resolve_connections or "parse").strip().lower()
+        if mode not in ("parse", "task"):
+            raise ValueError(
+                f"Unsupported resolve_connections: {self.resolve_connections}. "
+                "Must be one of: parse, task"
+            )
+        self.resolve_connections = mode
 
         # Warn if environment is set to a named environment (not empty string)
         # This is likely a misconfiguration - users probably meant to use 'gateway' instead
@@ -345,10 +360,11 @@ class GenerationConfig:
     task_display_names: bool = True
     # Run the model's SQLMesh audits in a dedicated task after the model task.
     audit_tasks: bool = False
-    # Pass no_auto_upstream=True to Context.run (SQLMesh 0.230+). Recommended:
-    # Airflow already schedules the upstream models as their own tasks, so letting
-    # SQLMesh chase upstream again duplicates work. Off by default to keep the
-    # behaviour of existing DAGs unchanged.
+    # Pass no_auto_upstream=True to Context.run (SQLMesh 0.230+), so a model task
+    # does not re-check its upstream models. Off by default on purpose: with it,
+    # SQLMesh processes a model's intervals even when the upstream has no data for
+    # them yet and marks them done. When on, it is only used for models whose
+    # upstream models are all tasks in the same DAG (Airflow ran them first).
     no_auto_upstream: bool = False
     # Prefix Airflow task ids when more than one project is drawn into the same
     # DAG. Empty keeps the historical ids (sqlmesh_janitor, source__*, sqlmesh_*).
@@ -496,6 +512,7 @@ class DAGGeneratorConfig:
                 "state_connection_config": self.sqlmesh.state_connection_config,
                 "default_catalog": self.sqlmesh.default_catalog,
                 "config_overrides": self.sqlmesh.config_overrides,
+                "resolve_connections": self.sqlmesh.resolve_connections,
             },
             "airflow": {
                 "dag_id": self.airflow.dag_id,

@@ -69,6 +69,16 @@ class SQLMeshModelInfo:
         """Generate Airflow task ID from model name"""
         return model_task_id(self.name)
 
+    def is_external(self) -> bool:
+        """
+        A table declared in ``external_models.yaml``: SQLMesh reads it, never builds it.
+
+        Such a model has no work to run, so the DAG shows it as a source node.
+        """
+        from sqlmesh_dag_generator.selectors import canonical_kind_name
+
+        return canonical_kind_name(self.kind) == "EXTERNAL"
+
     def is_incremental(self) -> bool:
         """Check if this is an incremental model"""
         return "INCREMENTAL" in self.kind.upper()
