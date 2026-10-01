@@ -25,12 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the task instance log says what the run builds.
 - `sqlmesh_dag_generator.task_docs` with the card builders, and
   `SQLMeshModelInfo.columns`, `column_descriptions`, `time_column`, `grains`.
+- `generation.interval_window: sqlmesh`. A model task passes only the end of
+  its run's data interval, `ctx.run(end=data_interval_end)`, and SQLMesh fills
+  every interval its state says is missing up to that point. An outage or a
+  failed run is caught up by the next run of the model, with no limit on the
+  gap. `sqlmesh_integrity_guard` and `sqlmesh_recovery_backfill` are not
+  created and `recovery_mode` is ignored. An Airflow 3 manual run with no
+  logical date has no interval; it runs up to now. Generated Python, dynamic,
+  Bash (`--end`) and Kubernetes (no `--start`) DAGs follow the same rule.
+  Default stays `airflow`.
+
+### Fixed
+- Generated Bash DAGs were invalid Python for any real project: the quoted
+  model FQN (`"db"."schema"."table"`) closed the `bash_command` string. The
+  command is now written with `repr()` and the model and project path are
+  shell-quoted.
 
 ### Notes
 - Airflow 3 shows `doc_md` on the task page (`/dags/<dag>/tasks/<task>`, the
   task name in the Grid view), not on a task instance inside a run.
-- Covers `create_tasks_in_dag` and DAG groups. Generated static and dynamic DAG
-  files are unchanged.
+- Task labels and cards cover `create_tasks_in_dag` and DAG groups. Generated
+  static and dynamic DAG files do not carry them.
 
 ## [0.12.0] - 2026-10-01
 

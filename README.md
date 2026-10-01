@@ -229,10 +229,25 @@ It is off by default in 0.10.0 so existing DAGs keep their current behaviour.
 
 ## Recovery and completeness
 
-The package forwards Airflow's `data_interval_start` / `data_interval_end` into
-`ctx.run(start=..., end=...)`. It runs the interval Airflow gives it - it does not
-invent missed runs. With sub-hourly incremental models and `catchup=False`, an outage
-leaves gaps unless you replay them, so there is an explicit policy:
+Two ways to decide what a model task processes:
+
+```yaml
+generation:
+  interval_window: sqlmesh   # or: airflow (the default)
+```
+
+**`sqlmesh`** passes only the end of the run's data interval:
+`ctx.run(end=data_interval_end)`. SQLMesh fills every interval its state says is
+missing, up to that point. A scheduler outage or a failed run is caught up by the next
+run of that model, however long the gap was, and no guard or recovery task is added.
+`end` is the run's own boundary, not the wall clock, so a retry or a cleared old run
+never takes work from a later run. To keep a long catch-up from becoming one huge
+query, set `batch_size` on the model kind. Recommended for new DAGs.
+
+**`airflow`** passes the run's whole data interval, `ctx.run(start=..., end=...)`. It
+runs the interval Airflow gives it and nothing else. With sub-hourly incremental models
+and `catchup=False`, an outage leaves gaps unless you replay them, so this mode comes
+with an explicit recovery policy:
 
 - `recovery_mode="disabled"` - nothing is added.
 - `recovery_mode="warn"` - a guard task detects and logs missing intervals.

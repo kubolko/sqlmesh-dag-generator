@@ -245,6 +245,7 @@ _INTERVAL_UNITS = (
     "year",
 )
 _BACKFILL_SCOPES = {"changed", "all"}
+_INTERVAL_WINDOWS = {"airflow", "sqlmesh"}
 
 
 @dataclass
@@ -363,6 +364,14 @@ class GenerationConfig:
     # modified by this plan. ``all`` backfills every model with missing intervals,
     # which is what ``plan()`` does on a production environment.
     backfill_scope: str = "changed"
+    # Which intervals a model task processes.
+    # ``airflow`` (default): the DAG run's data interval. A tick that never ran
+    #   (scheduler outage) or a run that failed leaves a gap, which is what the
+    #   recovery tasks (sqlmesh_integrity_guard / sqlmesh_recovery_backfill) are for.
+    # ``sqlmesh``: every interval SQLMesh's state says is missing, up to the end of
+    #   the run's data interval. Gaps from outages and failed runs are filled by
+    #   the next run of that model, so the recovery tasks are not created.
+    interval_window: str = "airflow"
     model_checks: Union[Dict[str, Any], ModelChecksConfig] = field(
         default_factory=ModelChecksConfig
     )
@@ -394,6 +403,13 @@ class GenerationConfig:
                 f"Must be one of: {', '.join(sorted(_BACKFILL_SCOPES))}"
             )
         self.backfill_scope = scope
+        window = str(self.interval_window or "airflow").strip().lower()
+        if window not in _INTERVAL_WINDOWS:
+            raise ValueError(
+                f"Unsupported interval_window: {self.interval_window}. "
+                f"Must be one of: {', '.join(sorted(_INTERVAL_WINDOWS))}"
+            )
+        self.interval_window = window
 
 
 @dataclass
@@ -557,6 +573,7 @@ class DAGGeneratorConfig:
                 "task_id_prefix": self.generation.task_id_prefix,
                 "dag_tick_minutes": self.generation.dag_tick_minutes,
                 "backfill_scope": self.generation.backfill_scope,
+                "interval_window": self.generation.interval_window,
                 "model_checks": {
                     "require_explicit_start": self.generation.model_checks.require_explicit_start,
                     "full_min_interval": self.generation.model_checks.full_min_interval,
