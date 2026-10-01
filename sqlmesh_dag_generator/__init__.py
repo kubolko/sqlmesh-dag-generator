@@ -2,7 +2,7 @@
 SQLMesh DAG Generator - Airflow orchestration for SQLMesh projects, self-hosted.
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 
 from sqlmesh_dag_generator.airflow_compat import (

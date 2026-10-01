@@ -66,10 +66,25 @@ class SQLMeshConfig:
     config_overrides: Dict[str, Any] = field(
         default_factory=dict
     )  # Any other SQLMesh config overrides
+    # When the warehouse and state connections are resolved:
+    # ``parse`` (default) - while Airflow parses the DAG file, once per parse.
+    # ``task`` - inside each task, right before SQLMesh opens a session. The DAG
+    #   processor then never handles warehouse secrets; the project is loaded at
+    #   parse time with ``parse_connection`` (same type and database, secrets may
+    #   be placeholders) or, without it, with the project's own config.yaml.
+    resolve_connections: str = "parse"
 
     def __post_init__(self):
         """Validate configuration and show deprecation warnings"""
         import warnings
+
+        mode = str(self.resolve_connections or "parse").strip().lower()
+        if mode not in ("parse", "task"):
+            raise ValueError(
+                f"Unsupported resolve_connections: {self.resolve_connections}. "
+                "Must be one of: parse, task"
+            )
+        self.resolve_connections = mode
 
         # Warn if environment is set to a named environment (not empty string)
         # This is likely a misconfiguration - users probably meant to use 'gateway' instead
@@ -245,6 +260,7 @@ _INTERVAL_UNITS = (
     "year",
 )
 _BACKFILL_SCOPES = {"changed", "all"}
+_INTERVAL_WINDOWS = {"airflow", "sqlmesh"}
 
 
 @dataclass
@@ -338,12 +354,17 @@ class GenerationConfig:
     # Copy SQLMesh model metadata (owner, description, tags, audits) onto the tasks
     # so the Airflow UI shows what the model actually is.
     model_docs: bool = True
+    # Label tasks with the table name ("dwh.orders", "API_ODS.EVENTS (source)")
+    # instead of the sanitised task id. Ids, and so task history, do not change.
+    # Airflow 2.9+; ignored on older versions.
+    task_display_names: bool = True
     # Run the model's SQLMesh audits in a dedicated task after the model task.
     audit_tasks: bool = False
-    # Pass no_auto_upstream=True to Context.run (SQLMesh 0.230+). Recommended:
-    # Airflow already schedules the upstream models as their own tasks, so letting
-    # SQLMesh chase upstream again duplicates work. Off by default to keep the
-    # behaviour of existing DAGs unchanged.
+    # Pass no_auto_upstream=True to Context.run (SQLMesh 0.230+), so a model task
+    # does not re-check its upstream models. Off by default on purpose: with it,
+    # SQLMesh processes a model's intervals even when the upstream has no data for
+    # them yet and marks them done. When on, it is only used for models whose
+    # upstream models are all tasks in the same DAG (Airflow ran them first).
     no_auto_upstream: bool = False
     # Prefix Airflow task ids when more than one project is drawn into the same
     # DAG. Empty keeps the historical ids (sqlmesh_janitor, source__*, sqlmesh_*).
@@ -359,6 +380,14 @@ class GenerationConfig:
     # modified by this plan. ``all`` backfills every model with missing intervals,
     # which is what ``plan()`` does on a production environment.
     backfill_scope: str = "changed"
+    # Which intervals a model task processes.
+    # ``airflow`` (default): the DAG run's data interval. A tick that never ran
+    #   (scheduler outage) or a run that failed leaves a gap, which is what the
+    #   recovery tasks (sqlmesh_integrity_guard / sqlmesh_recovery_backfill) are for.
+    # ``sqlmesh``: every interval SQLMesh's state says is missing, up to the end of
+    #   the run's data interval. Gaps from outages and failed runs are filled by
+    #   the next run of that model, so the recovery tasks are not created.
+    interval_window: str = "airflow"
     model_checks: Union[Dict[str, Any], ModelChecksConfig] = field(
         default_factory=ModelChecksConfig
     )
@@ -390,6 +419,13 @@ class GenerationConfig:
                 f"Must be one of: {', '.join(sorted(_BACKFILL_SCOPES))}"
             )
         self.backfill_scope = scope
+        window = str(self.interval_window or "airflow").strip().lower()
+        if window not in _INTERVAL_WINDOWS:
+            raise ValueError(
+                f"Unsupported interval_window: {self.interval_window}. "
+                f"Must be one of: {', '.join(sorted(_INTERVAL_WINDOWS))}"
+            )
+        self.interval_window = window
 
 
 @dataclass
@@ -476,6 +512,7 @@ class DAGGeneratorConfig:
                 "state_connection_config": self.sqlmesh.state_connection_config,
                 "default_catalog": self.sqlmesh.default_catalog,
                 "config_overrides": self.sqlmesh.config_overrides,
+                "resolve_connections": self.sqlmesh.resolve_connections,
             },
             "airflow": {
                 "dag_id": self.airflow.dag_id,
@@ -547,11 +584,13 @@ class DAGGeneratorConfig:
                 "emit_datasets": self.generation.emit_datasets,
                 "dataset_uri_prefix": self.generation.dataset_uri_prefix,
                 "model_docs": self.generation.model_docs,
+                "task_display_names": self.generation.task_display_names,
                 "audit_tasks": self.generation.audit_tasks,
                 "no_auto_upstream": self.generation.no_auto_upstream,
                 "task_id_prefix": self.generation.task_id_prefix,
                 "dag_tick_minutes": self.generation.dag_tick_minutes,
                 "backfill_scope": self.generation.backfill_scope,
+                "interval_window": self.generation.interval_window,
                 "model_checks": {
                     "require_explicit_start": self.generation.model_checks.require_explicit_start,
                     "full_min_interval": self.generation.model_checks.full_min_interval,

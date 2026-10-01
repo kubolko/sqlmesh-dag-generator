@@ -163,7 +163,67 @@ def extract_audit_names(model: Any) -> list:
     return names
 
 
+def extract_columns(model: Any) -> Dict[str, str]:
+    """
+    ``{column: type}`` for a model, as SQL type strings in the model's dialect.
+
+    SQLMesh infers the types from the query, or takes them from an explicit
+    ``columns`` block. Anything it cannot infer comes back empty rather than
+    failing DAG parsing.
+    """
+    try:
+        columns = getattr(model, "columns_to_types", None)
+    except Exception:  # noqa: BLE001 - type inference must not break DAG parsing
+        return {}
+    if not columns:
+        return {}
+
+    dialect = getattr(model, "dialect", None) or None
+    out: Dict[str, str] = {}
+    for name, data_type in columns.items():
+        try:
+            out[str(name)] = (
+                data_type.sql(dialect=dialect) if hasattr(data_type, "sql") else str(data_type)
+            )
+        except Exception:  # noqa: BLE001
+            out[str(name)] = str(data_type)
+    return out
+
+
+def extract_column_descriptions(model: Any) -> Dict[str, str]:
+    """Column comments from the MODEL block or ``-- comments`` in the query."""
+    try:
+        descriptions = getattr(model, "column_descriptions", None) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return {str(k): str(v) for k, v in descriptions.items() if v}
+
+
+def extract_time_column(model: Any) -> Optional[str]:
+    """The ``time_column`` of an INCREMENTAL_BY_TIME_RANGE model, unquoted."""
+    time_column = getattr(getattr(model, "kind", None), "time_column", None)
+    column = getattr(time_column, "column", None)
+    if column is None:
+        return None
+    name = getattr(column, "name", None) or str(column)
+    return str(name).replace('"', "")
+
+
+def extract_grains(model: Any) -> list:
+    """Grain columns (``grain`` / ``grains`` in the MODEL block)."""
+    grains = getattr(model, "grains", None) or []
+    out = []
+    for grain in grains:
+        sql = grain.sql() if hasattr(grain, "sql") else str(grain)
+        out.append(sql.replace('"', ""))
+    return out
+
+
 __all__ = [
+    "extract_columns",
+    "extract_column_descriptions",
+    "extract_grains",
+    "extract_time_column",
     "load_sqlmesh_config",
     "config_to_dict",
     "normalize_depends_on",

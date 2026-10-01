@@ -219,8 +219,14 @@ def resolve_credentials(
         # Already a dict - pass through
         config = resolve_credentials({"type": "postgres", "host": "..."})
     """
-    # If already a dict, return as-is
-    if isinstance(source, dict):
+    # A factory, e.g. ``lambda: build_config(BaseHook.get_connection("SNOWFLAKE"))``.
+    # Used with resolve_connections="task", where it is called inside the task.
+    if callable(source) and not hasattr(source, "conn_type"):
+        return resolve_credentials(source(), resolver_type=resolver_type)
+
+    # A dict is a finished connection config - unless a resolver was asked for
+    # explicitly: resolver_type="env" maps config keys to environment variable names.
+    if isinstance(source, dict) and resolver_type is None:
         return source
 
     # Auto-detect resolver type if not provided

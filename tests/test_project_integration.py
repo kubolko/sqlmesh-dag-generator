@@ -8,6 +8,7 @@ model file path, what ``depends_on`` contains.
 
 import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -180,3 +181,50 @@ def test_manifest_round_trip_and_diff(generator):
         "removed": ["demo.marketing_daily"],
         "changed": ["demo.stg_orders"],
     }
+
+
+def test_task_docs_on_a_real_project(tmp_path):
+    """Columns, comments, externals and undeclared sources as SQLMesh reports them."""
+    from airflow import DAG
+
+    (tmp_path / "config.yaml").write_text(CONFIG_YAML)
+    (tmp_path / "external_models.yaml").write_text(
+        "- name: raw.event_hub\n"
+        "  columns:\n"
+        "    event_id: int\n"
+        "    received_at: timestamp\n"
+    )
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "events.sql").write_text(
+        "MODEL (name demo.events, kind FULL, grain event_id);\n\n"
+        "SELECT\n"
+        "  e.event_id, -- unique per message\n"
+        "  e.received_at\n"
+        "FROM raw.event_hub AS e\n"
+        "JOIN raw.undeclared_lookup AS l ON e.event_id = l.event_id\n"
+    )
+
+    generator = SQLMeshDAGGenerator(
+        sqlmesh_project_path=str(tmp_path), dag_id="docs", auto_replan_on_change=False
+    )
+    with DAG("docs", start_date=datetime(2024, 1, 1), schedule=None) as dag:
+        generator.create_tasks_in_dag(dag)
+
+    events = dag.get_task("sqlmesh_memory_demo_events")
+    assert "| Grain | `event_id` |" in events.doc_md
+    assert "unique per message" in events.doc_md
+    # both the declared external and the undeclared table are sources of the model
+    assert "- `memory.raw.event_hub` (source)" in events.doc_md
+    assert "- `memory.raw.undeclared_lookup` (source)" in events.doc_md
+
+    source = dag.get_task("source__memory_raw_undeclared_lookup")
+    assert "- `demo.events`" in source.doc_md
+    assert "create_external_models" in source.doc_md
+
+    # the declared external is a source node too - nothing to run - with its columns
+    assert "sqlmesh_memory_raw_event_hub" not in dag.task_dict
+    external = dag.get_task("source__memory_raw_event_hub")
+    assert external.task_type == "EmptyOperator"
+    assert "| Declared in | `external_models.yaml` |" in external.doc_md
+    assert "| `received_at` | `TIMESTAMP` |" in external.doc_md
+    assert "sqlmesh_memory_demo_events" in external.downstream_task_ids

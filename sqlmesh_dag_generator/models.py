@@ -54,6 +54,12 @@ class SQLMeshModelInfo:
     cron_tz: Optional[str] = None  # IANA zone name when the model sets cron_tz
     project: Optional[str] = None  # SQLMesh multi-repo project name
     audits: List[str] = field(default_factory=list)  # audit names attached to the model
+    # Shown on the task in the Airflow UI (see task_docs). Empty when SQLMesh
+    # cannot infer them, e.g. a Python model without declared columns.
+    columns: Dict[str, str] = field(default_factory=dict)  # column -> SQL type
+    column_descriptions: Dict[str, str] = field(default_factory=dict)
+    time_column: Optional[str] = None  # INCREMENTAL_BY_TIME_RANGE time column
+    grains: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.display_name:
@@ -62,6 +68,16 @@ class SQLMeshModelInfo:
     def get_task_id(self) -> str:
         """Generate Airflow task ID from model name"""
         return model_task_id(self.name)
+
+    def is_external(self) -> bool:
+        """
+        A table declared in ``external_models.yaml``: SQLMesh reads it, never builds it.
+
+        Such a model has no work to run, so the DAG shows it as a source node.
+        """
+        from sqlmesh_dag_generator.selectors import canonical_kind_name
+
+        return canonical_kind_name(self.kind) == "EXTERNAL"
 
     def is_incremental(self) -> bool:
         """Check if this is an incremental model"""

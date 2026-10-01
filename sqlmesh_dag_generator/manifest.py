@@ -25,7 +25,7 @@ def _model_entry(generator, model_info) -> Dict[str, Any]:
     return {
         "name": model_info.display_name,
         "fqn": model_info.name,
-        "task_id": model_info.get_task_id(),
+        "task_id": generator.task_id_for(model_info),
         "kind": model_info.kind,
         "cron": model_info.cron,
         "cron_tz": model_info.cron_tz,
