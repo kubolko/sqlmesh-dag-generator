@@ -217,15 +217,59 @@ generation:
 
 ## Upstream handling
 
-Every model already has its own Airflow task, so SQLMesh does not need to pull
-upstream models in again:
+By default each model task lets SQLMesh check the model's upstream models and fill
+them first if they are behind. In a DAG where every model is its own task that check
+almost always finds nothing to do. `no_auto_upstream: true` skips it.
 
-```yaml
-generation:
-  no_auto_upstream: true    # recommended; will become the default in 0.11.0
+It stays off by default for a reason: with it, SQLMesh processes a model's intervals
+even when an upstream model has no data for them yet, and marks them done - the gap
+in the child is then permanent. When it is on, the package only applies it to models
+whose upstream models are all tasks in the same DAG, because Airflow has run those
+first. A filtered DAG or a DAG group that reads another group's model keeps the
+default.
+
+## Connections resolved in the task
+
+By default the warehouse and state connections are resolved while Airflow parses
+the DAG file, every parse. With `resolve_connections="task"` they are resolved inside
+each task instead, right before SQLMesh opens a session, so the DAG processor never
+handles warehouse secrets:
+
+```python
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/sqlmesh_snowflake",
+    gateway="snowflake",
+    connection=lambda: snowflake_config(BaseHook.get_connection("SNOWFLAKE")),
+    state_connection="RDS_SQLMESH",
+    resolve_connections="task",
+    # Used only to load the project while parsing: same type and database as the
+    # real one, secrets may be placeholders. Omit it if config.yaml loads on its own.
+    parse_connection={"type": "snowflake", "account": "-", "user": "-", "password": "-",
+                      "database": "API_ODS"},
+)
 ```
 
-It is off by default in 0.10.0 so existing DAGs keep their current behaviour.
+`connection` and `state_connection` accept an Airflow connection id, a dict, or a
+function returning either. They are resolved once per task process.
+
+## Attaching work to part of the graph
+
+`select_tasks` returns the tasks `create_tasks_in_dag` made for a selection, so DAG
+code does not have to guess them from roots or task ids:
+
+```python
+with DAG(...) as dag:
+    generator.create_tasks_in_dag(dag)
+    refresh_streaming_mvs >> generator.select_tasks("interval:FIVE_MINUTE")
+```
+
+## External models
+
+Tables declared in `external_models.yaml` appear as source nodes, with the declared
+description and columns on their card - the same task id an undeclared source table
+gets, so declaring a table later does not rename its task. SQLMesh reads that file
+only from the project root or `external_models/*.yaml`; the package warns when it
+finds one anywhere else.
 
 ## Recovery and completeness
 

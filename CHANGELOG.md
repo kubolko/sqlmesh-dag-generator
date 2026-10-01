@@ -35,6 +35,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bash (`--end`) and Kubernetes (no `--start`) DAGs follow the same rule.
   Default stays `airflow`.
 
+- `resolve_connections: task` with `parse_connection`. The warehouse and state
+  connections are resolved inside each task, once per process, right before
+  SQLMesh opens a session, instead of on every DAG parse. `connection` and
+  `state_connection` also accept a function returning a connection id or dict.
+  The project is loaded at parse time with `parse_connection` (same type and
+  database, placeholder secrets) or, without it, with config.yaml as it is.
+- `generator.select_tasks(selection, exclude=None)` returns the tasks
+  `create_tasks_in_dag` made for a selection: `refresh >> generator.select_tasks(
+  "interval:FIVE_MINUTE")`.
+- A warning at load when an `external_models.yaml` sits where SQLMesh does not
+  read it (anything but the project root and `external_models/`), with the
+  number of unused declarations and of entries whose `columns` are a list.
+
+### Changed
+- **Unknown arguments to `SQLMeshDAGGenerator(...)` raise `TypeError`** with the
+  closest valid name and the installed version. They used to be dropped, so a
+  DAG written for a newer release ran on an older one with options missing.
+- Every config field can now be passed to the constructor. `dry_run`, `mode`,
+  `docker_image`, `namespace`, `max_parallel_tasks`, `start_date`,
+  `description`, `env_vars` and `config_path` were silently ignored before;
+  `dry_run=True` still wrote the DAG file.
+- **External models are source nodes.** A table in `external_models.yaml` gets
+  an `EmptyOperator` with id `source__<table>` - the id an undeclared source
+  table already had - and a card with its description and columns. It used to
+  get a `sqlmesh_<table>` task that loaded SQLMesh and ran nothing. External
+  models no longer count for the auto-detected schedule, are not owned by a DAG
+  group, and are not reported as unscheduled.
+- `no_auto_upstream` stays off by default; the 0.11.0 plan to turn it on is
+  dropped. With it, SQLMesh processes a model's intervals while its upstream has
+  no data for them yet and marks them done. When enabled, it now applies only to
+  models whose upstream models are all tasks in the same DAG.
+- The manifest's `task_id` is the id in the DAG, including `task_id_prefix` and
+  `source__` for external models.
+
 ### Fixed
 - Generated Bash DAGs were invalid Python for any real project: the quoted
   model FQN (`"db"."schema"."table"`) closed the `bash_command` string. The
