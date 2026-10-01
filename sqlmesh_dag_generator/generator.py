@@ -286,6 +286,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 emit_datasets=kwargs.get("emit_datasets", False),
                 dataset_uri_prefix=kwargs.get("dataset_uri_prefix", "sqlmesh://models/"),
                 model_docs=kwargs.get("model_docs", True),
+                task_display_names=kwargs.get("task_display_names", True),
                 audit_tasks=kwargs.get("audit_tasks", False),
                 no_auto_upstream=kwargs.get("no_auto_upstream", False),
                 task_id_prefix=kwargs.get("task_id_prefix"),
@@ -431,9 +432,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                 # Merge state connection config
                 if self.config.sqlmesh.state_connection_config:
-                    config_dict["gateways"][gateway_name]["state_connection"] = (
-                        self.config.sqlmesh.state_connection_config
-                    )
+                    config_dict["gateways"][gateway_name][
+                        "state_connection"
+                    ] = self.config.sqlmesh.state_connection_config
                     logger.info(f"Runtime state connection configured for gateway: {gateway_name}")
                     logger.debug(
                         f"State connection config: {self.config.sqlmesh.state_connection_config}"
@@ -621,26 +622,52 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             )
         return overrides
 
-    def _model_doc_md(self, model_info: SQLMeshModelInfo) -> str:
-        """Short Markdown card shown on the task in the Airflow UI."""
-        lines = [f"### `{model_info.display_name}`", ""]
-        if model_info.description:
-            lines += [model_info.description, ""]
-        lines.append(f"- **kind**: `{model_info.kind}`")
-        if model_info.cron:
-            cron_line = f"- **cron**: `{model_info.cron}`"
-            if model_info.cron_tz:
-                cron_line += f" ({model_info.cron_tz})"
-            lines.append(cron_line)
-        if model_info.owner:
-            lines.append(f"- **owner**: {model_info.owner}")
-        if model_info.tags:
-            lines.append(f"- **tags**: {', '.join(model_info.tags)}")
-        if model_info.audits:
-            lines.append(f"- **audits**: {', '.join(model_info.audits)}")
-        if model_info.path:
-            lines.append(f"- **source**: `{model_info.path}`")
-        return "\n".join(lines)
+    def _model_lineage(self) -> Dict[str, Dict[str, List[str]]]:
+        """
+        What each model reads and what reads it, by display name.
+
+        Returns ``{model_key: {"reads_models", "reads_sources", "read_by"}}``.
+        Models owned by another DAG group still count as models, not sources.
+        """
+        known_models = self.project_model_keys or set(self.models)
+        lineage: Dict[str, Dict[str, List[str]]] = {
+            name: {"reads_models": [], "reads_sources": [], "read_by": []} for name in self.models
+        }
+        for name, info in self.models.items():
+            for dep in info.dependencies:
+                if dep in self.models:
+                    lineage[name]["reads_models"].append(self.models[dep].display_name)
+                    lineage[dep]["read_by"].append(info.display_name)
+                elif dep in known_models:
+                    lineage[name]["reads_models"].append(dep.replace('"', ""))
+            lineage[name]["reads_sources"] = [
+                source.replace('"', "") for source in self.get_source_tables(name)
+            ]
+        return lineage
+
+    def _model_doc_md(
+        self,
+        model_info: SQLMeshModelInfo,
+        lineage: Optional[Dict[str, List[str]]] = None,
+    ) -> str:
+        """Markdown card shown on the task in the Airflow UI (see task_docs)."""
+        from sqlmesh_dag_generator.task_docs import model_doc_md
+
+        lineage = lineage or {}
+        return model_doc_md(
+            model_info,
+            reads_models=lineage.get("reads_models", ()),
+            reads_sources=lineage.get("reads_sources", ()),
+            read_by=lineage.get("read_by", ()),
+        )
+
+    def _display_name_kwargs(self, label: str) -> Dict[str, Any]:
+        """``task_display_name`` where Airflow supports it (2.9+), else nothing."""
+        if not self.config.generation.task_display_names:
+            return {}
+        from sqlmesh_dag_generator.airflow_compat import supports_task_display_name
+
+        return {"task_display_name": label} if supports_task_display_name() else {}
 
     def _resolve_callback(self, dotted_path: Optional[str]):
         """Import ``module.attr`` callbacks configured as strings."""
@@ -680,12 +707,20 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         self,
         model_info: SQLMeshModelInfo,
         overrides: Dict[str, Dict[str, Any]],
+        lineage: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, Any]:
         """Operator kwargs for one model task: common + docs + datasets + overrides."""
+        from sqlmesh_dag_generator.task_docs import display_label
+
         kwargs = dict(self._common_task_kwargs())
+        kwargs.update(
+            self._display_name_kwargs(
+                display_label(model_info.display_name, prefix=self.config.generation.task_id_prefix)
+            )
+        )
 
         if self.config.generation.model_docs:
-            kwargs["doc_md"] = self._model_doc_md(model_info)
+            kwargs["doc_md"] = self._model_doc_md(model_info, lineage)
             if model_info.owner:
                 kwargs["owner"] = model_info.owner
 
@@ -758,6 +793,10 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         # Extract dependencies (str names or objects with .name — varies by sqlmesh version)
         from sqlmesh_dag_generator.sqlmesh_compat import (
             extract_audit_names,
+            extract_column_descriptions,
+            extract_columns,
+            extract_grains,
+            extract_time_column,
             normalize_cron_tz,
             normalize_depends_on,
         )
@@ -796,6 +835,10 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             cron_tz=normalize_cron_tz(getattr(model, "cron_tz", None)),
             project=getattr(model, "project", None) or None,
             audits=extract_audit_names(model),
+            columns=extract_columns(model) if self.config.generation.model_docs else {},
+            column_descriptions=extract_column_descriptions(model),
+            time_column=extract_time_column(model),
+            grains=extract_grains(model),
         )
 
     def _relative_model_path(self, model: Model) -> Optional[str]:
@@ -1118,6 +1161,11 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             PythonOperator,
             TriggerDagRunOperator,
         )
+        from sqlmesh_dag_generator.task_docs import (
+            display_label,
+            model_run_summary,
+            source_doc_md,
+        )
         from sqlmesh_dag_generator.triggers import (
             default_trigger_conf,
             resolve_model_trigger,
@@ -1146,11 +1194,10 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         # the shared DAG ticks faster (another project in the same DAG).
         configured_tick = self.config.generation.dag_tick_minutes
         expected_interval_minutes = (
-            configured_tick
-            if configured_tick is not None
-            else self.get_expected_interval_minutes()
+            configured_tick if configured_tick is not None else self.get_expected_interval_minutes()
         )
         task_overrides = self._resolve_task_overrides(target_models)
+        lineage = self._model_lineage()
 
         # Step -1: Create Health Check Task (if enabled)
         health_check_task = None
@@ -1365,15 +1412,35 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 source_tables = self.get_source_tables(model_name)
                 all_source_tables.update(source_tables)
 
+            # Which models in this DAG read each source, for the source's doc card.
+            source_readers: Dict[str, List[str]] = {}
+            for model_name in target_models:
+                for source_table in self.get_source_tables(model_name):
+                    source_readers.setdefault(source_table, []).append(
+                        target_models[model_name].display_name
+                    )
+
             # Create EmptyOperator for each source table
             for source_table in all_source_tables:
                 # Create a clean task_id from table name using sanitize_task_id
                 # This removes quotes, dots, and other invalid characters
                 task_id = self._prefixed_task_id(f"source__{sanitize_task_id(source_table)}")
 
+                source_kwargs = self._display_name_kwargs(
+                    display_label(
+                        source_table, source=True, prefix=self.config.generation.task_id_prefix
+                    )
+                )
+                if self.config.generation.model_docs:
+                    source_kwargs["doc_md"] = source_doc_md(
+                        source_table,
+                        read_by=source_readers.get(source_table, []),
+                    )
+
                 source_task = EmptyOperator(
                     task_id=task_id,
                     dag=dag,
+                    **source_kwargs,
                 )
 
                 # Store with original table name as key
@@ -1397,7 +1464,14 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             task_id = self._prefixed_task_id(model_info.get_task_id())
 
             # Create the execution function
-            def make_callable(m_name, m_fqn, m_interval_minutes=None, m_cron=None, m_cron_tz=None):
+            def make_callable(
+                m_name,
+                m_fqn,
+                m_interval_minutes=None,
+                m_cron=None,
+                m_cron_tz=None,
+                m_summary=None,
+            ):
                 def execute_model(**context):
                     # Get time interval (Airflow 2.2+)
                     # data_interval_start/end provides correct time range for incremental models
@@ -1427,6 +1501,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                         if not self.config.generation.return_value:
                             return None
                         return not_due_skip_result(m_fqn, m_cron)
+
+                    if m_summary:
+                        logger.info("%s", m_summary)
 
                     from sqlmesh import Context
 
@@ -1585,9 +1662,10 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     ),
                     model_info.cron,
                     model_info.cron_tz,
+                    model_run_summary(model_info, **lineage.get(model_name, {})),
                 ),
                 dag=dag,
-                **self._model_task_kwargs(model_info, task_overrides),
+                **self._model_task_kwargs(model_info, task_overrides, lineage.get(model_name)),
             )
 
             tasks[model_name] = task

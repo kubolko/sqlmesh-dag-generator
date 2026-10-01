@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-01
+
+### Added
+- Tasks are labelled with the table they stand for. Model tasks show
+  `dwh.orders`, source tasks `API_ODS.EVENTS (source)`, and with
+  `task_id_prefix` the project goes first: `[snowflake] dwh.orders`. This is
+  `task_display_name`; task ids are unchanged, so task history is kept.
+  Airflow 2.9+ and 3.x. `generation.task_display_names: false` turns it off.
+- Source tasks get a `doc_md` card: the table, its catalog and schema, and the
+  models in the DAG that read it.
+- Model cards list what the model reads (models and sources), what reads it,
+  its grain, the time column of an incremental model, and its columns with
+  types and comments. Types SQLMesh cannot infer are left blank instead of
+  `UNKNOWN`. Wide tables are capped at 200 columns.
+- Each model run logs the same lineage in three lines before loading SQLMesh,
+  so the task instance log says what the run builds.
+- `sqlmesh_dag_generator.task_docs` with the card builders, and
+  `SQLMeshModelInfo.columns`, `column_descriptions`, `time_column`, `grains`.
+
+### Notes
+- Airflow 3 shows `doc_md` on the task page (`/dags/<dag>/tasks/<task>`, the
+  task name in the Grid view), not on a task instance inside a run.
+- Covers `create_tasks_in_dag` and DAG groups. Generated static and dynamic DAG
+  files are unchanged.
+
 ## [0.12.0] - 2026-10-01
 
 ### Added

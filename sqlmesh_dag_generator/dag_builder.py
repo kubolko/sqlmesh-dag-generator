@@ -530,8 +530,7 @@ dag = DAG(
         janitor_task_id = self._airflow_task_id("sqlmesh_janitor")
         if leaf_tasks and self.config.generation.operator_type == "python":
             dep_lines.append("")
-            dep_lines.append(
-                f"""def _run_sqlmesh_janitor(**context):
+            dep_lines.append(f"""def _run_sqlmesh_janitor(**context):
     from sqlmesh import Context
     ctx = Context(paths=SQLMESH_PROJECT_PATH, gateway=SQLMESH_GATEWAY)
     ctx.run_janitor(ignore_ttl=False)
@@ -542,22 +541,17 @@ sqlmesh_janitor = PythonOperator(
     python_callable=_run_sqlmesh_janitor,
     trigger_rule="all_done",
     dag=dag,
-)"""
-            )
+)""")
             dep_lines.append(f"[{', '.join(leaf_tasks)}] >> sqlmesh_janitor")
         elif leaf_tasks and self.config.generation.operator_type == "bash":
-            janitor_cmd = (
-                f"cd {self.config.sqlmesh.project_path} && sqlmesh janitor"
-            )
+            janitor_cmd = f"cd {self.config.sqlmesh.project_path} && sqlmesh janitor"
             dep_lines.append("")
-            dep_lines.append(
-                f'''sqlmesh_janitor = BashOperator(
+            dep_lines.append(f"""sqlmesh_janitor = BashOperator(
     task_id="{janitor_task_id}",
     bash_command="{janitor_cmd}",
     trigger_rule="all_done",
     dag=dag,
-)'''
-            )
+)""")
             dep_lines.append(f"[{', '.join(leaf_tasks)}] >> sqlmesh_janitor")
 
         return "\n".join(dep_lines)

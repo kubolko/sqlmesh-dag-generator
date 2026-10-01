@@ -185,9 +185,24 @@ See [docs/MAINTENANCE_TASKS.md](docs/MAINTENANCE_TASKS.md).
 
 ## What ends up in the Airflow UI
 
-Each model task carries the model's owner, description, kind, cron (with `cron_tz`),
-tags and audits as `doc_md`, so the task page answers "what is this?" without opening
-the repository. Turn it off with `model_docs=False`.
+Every task says which table it stands for, without opening the repository:
+
+- **Label.** Tasks are shown as `dwh.orders` or `API_ODS.EVENTS (source)` in the
+  graph, the grid and the task instance header, instead of the sanitised task id.
+  With `task_id_prefix` the project goes in front: `[snowflake] dwh.orders`. The task
+  ids do not change, so history is kept. Airflow 2.9+; `task_display_names=False`
+  turns it off.
+- **Documentation card** (`doc_md`) on model *and* source tasks: the table, kind,
+  cron, owner, grain, what it reads, what reads it, and its columns with types and
+  comments. Airflow 3 shows it behind the **Documentation** button on the task page -
+  click the task name in the Grid view. Airflow 2 shows it on the task instance
+  details page. `model_docs=False` turns it off.
+- **Log.** Each model run starts its log with the same lineage in three lines, so
+  the task instance view answers "what did this build?" on its own.
+
+Source tasks run nothing, so they have no log. Declaring a raw table as a SQLMesh
+external model (`sqlmesh create_external_models`) turns it into a model task whose
+card lists the columns and types.
 
 Per-selection task settings replace copy-pasted operator kwargs:
 

@@ -182,6 +182,24 @@ def _match_path(pattern: str, model_path: str) -> bool:
     return path == pattern or path.endswith(f"/{pattern}") or f"/{path}".find(f"/{pattern}/") >= 0
 
 
+def canonical_kind_name(kind: str) -> str:
+    """
+    The kind as it is written in a MODEL block: ``INCREMENTAL_BY_TIME_RANGE``.
+
+    SQLMesh hands us the kind object's repr (``IncrementalByTimeRangeKind<...>``);
+    names that are already upper-case pass through unchanged.
+    """
+    if not kind:
+        return ""
+    base = str(kind).split("<")[0].strip()
+    if base.isupper():
+        return base
+    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", base).upper()
+    if snake.endswith("_KIND"):
+        snake = snake[: -len("_KIND")]
+    return snake
+
+
 def _kind_aliases(kind: str) -> Set[str]:
     """
     Every spelling of a model kind.
@@ -193,10 +211,7 @@ def _kind_aliases(kind: str) -> Set[str]:
     if not kind:
         return set()
     base = kind.split("<")[0].strip()
-    snake = re.sub(r"(?<!^)(?=[A-Z])", "_", base).upper()
-    if snake.endswith("_KIND"):
-        snake = snake[: -len("_KIND")]
-    return {kind, base, snake}
+    return {kind, base, canonical_kind_name(kind)}
 
 
 def _match_method(model: SelectableModel, method: str, value: str) -> bool:
@@ -449,6 +464,7 @@ def explain_selection(
 
 __all__ = [
     "SUPPORTED_METHODS",
+    "canonical_kind_name",
     "SelectableModel",
     "SelectionError",
     "SelectionGraph",
