@@ -292,6 +292,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 task_id_prefix=kwargs.get("task_id_prefix"),
                 dag_tick_minutes=kwargs.get("dag_tick_minutes"),
                 backfill_scope=kwargs.get("backfill_scope", "changed"),
+                interval_window=kwargs.get("interval_window", "airflow"),
                 model_checks=kwargs.get("model_checks") or {},
             )
 
@@ -994,6 +995,8 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
     def _integrity_warning_message(self) -> Optional[str]:
         """Describe when Airflow scheduling can leave SQLMesh completeness gaps."""
+        if self.config.generation.interval_window == "sqlmesh":
+            return None
         if self.config.airflow.catchup or not self.has_subhourly_incremental_models():
             return None
 
@@ -1261,7 +1264,18 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         recovery_anchor_task = None
         if (
-            recovery_config.mode != "disabled"
+            self.config.generation.interval_window == "sqlmesh"
+            and recovery_config.mode != "disabled"
+        ):
+            logger.info(
+                "interval_window=sqlmesh: model tasks fill missing intervals from SQLMesh "
+                "state, so no integrity guard or recovery task is added "
+                "(recovery_mode=%s is ignored).",
+                recovery_config.mode,
+            )
+        if (
+            self.config.generation.interval_window == "airflow"
+            and recovery_config.mode != "disabled"
             and expected_interval_minutes
             and self.has_subhourly_incremental_models()
         ):
@@ -1525,6 +1539,21 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     # Load fresh context with runtime connections
                     run_ctx = Context(**context_kwargs)
 
+                    if self.config.generation.interval_window == "sqlmesh":
+                        # SQLMesh fills every interval its state says is missing,
+                        # up to the end of this run's data interval: outages and
+                        # failed runs are caught up here, per model. ``end`` stays
+                        # the run's boundary (not wall clock), so a retry or a
+                        # cleared old run never takes work from a later run. An
+                        # Airflow 3 manual run without a logical date has no
+                        # interval; SQLMesh then runs up to now.
+                        start = None
+                        end = context.get("data_interval_end")
+                        logger.info(
+                            "Filling every missing interval of %s up to %s",
+                            m_fqn,
+                            end or "now (run has no data interval)",
+                        )
                     # When this model's interval is COARSER than the DAG tick,
                     # the tick's data_interval window (e.g. 5 minutes on a mixed
                     # sub-hourly + hourly project) spans no full model interval.
@@ -1533,7 +1562,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                     # In that case omit start/end so SQLMesh selects the correct
                     # interval(s) from the model's own cron instead.
                     # (Only reached when the model *is* due, or skip_if_not_due=False.)
-                    if (
+                    elif (
                         m_interval_minutes
                         and expected_interval_minutes
                         and m_interval_minutes > expected_interval_minutes

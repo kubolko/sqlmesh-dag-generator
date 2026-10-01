@@ -177,6 +177,8 @@ class AirflowDAGBuilder:
             SQLMESH_GATEWAY = {f'"{self.config.sqlmesh.gateway}"' if self.config.sqlmesh.gateway else 'None'}
             EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minutes is not None else "None"}
             SKIP_IF_NOT_DUE = {self.config.generation.skip_if_not_due}
+            # "sqlmesh": fill every missing interval up to the run's end; "airflow": the run's interval
+            INTERVAL_WINDOW = "{self.config.generation.interval_window}"
         """).strip()
 
     def _build_dag_definition(self) -> str:
@@ -331,16 +333,16 @@ dag = DAG(
         gateway=SQLMESH_GATEWAY,
     )
 
-    # Run the specific model
-    logger.info(f"Running model {model_name_escaped} for interval {{start}} to {{end}}")
+    # Run the specific model. With INTERVAL_WINDOW = "sqlmesh" SQLMesh fills every
+    # missing interval up to the end of this run, so outages and failed runs catch up.
+    window = {{"end": end}} if INTERVAL_WINDOW == "sqlmesh" else {{"start": start, "end": end}}
+    logger.info(f"Running model {model_name_escaped} for {{window}}")
 
-    # Use SQLMesh's run method with model selection
     result = ctx.run(
         environment=SQLMESH_ENVIRONMENT,
-        start=start,
-        end=end,
         select_models=["{model_name_escaped}"],
         skip_janitor=True,
+        **window,
     )
 
     logger.info(f"Model {model_name_escaped} completed successfully")
@@ -376,15 +378,22 @@ dag = DAG(
 
     def _build_bash_task(self, model_info: SQLMeshModelInfo, task_id: str) -> str:
         """Build a BashOperator task"""
-        bash_command = (
-            f"cd {self.config.sqlmesh.project_path} && "
-            f"sqlmesh run --skip-janitor --select-models {model_info.name}"
-        )
+        import shlex
 
+        bash_command = (
+            f"cd {shlex.quote(self.config.sqlmesh.project_path)} && "
+            f"sqlmesh run --skip-janitor --select-models {shlex.quote(model_info.name)}"
+        )
+        if self.config.generation.interval_window == "sqlmesh":
+            # Airflow 3 manual runs can have no data interval; fall back to run_after.
+            bash_command += " --end '{{ data_interval_end or dag_run.run_after }}'"
+
+        # repr() keeps the command a valid Python literal: SQLMesh model names are
+        # quoted FQNs ("db"."schema"."table"), which broke the old f-string.
         return dedent(f"""
             {task_id} = BashOperator(
                 task_id="{task_id}",
-                bash_command="{bash_command}",
+                bash_command={bash_command!r},
                 dag=dag,
             )
         """).strip()
@@ -400,6 +409,15 @@ dag = DAG(
         model_name_escaped = model_info.name.replace('"', '\\"')
         namespace = self.config.generation.namespace
         image = self.config.generation.docker_image
+
+        if self.config.generation.interval_window == "sqlmesh":
+            # SQLMesh fills every missing interval up to the run's end. Airflow 3
+            # manual runs can have no data interval, so fall back to run_after.
+            start_args = ""
+            end_arg = "{{ data_interval_end or dag_run.run_after }}"
+        else:
+            start_args = '\n                    "--start", "{{ data_interval_start }}",'
+            end_arg = "{{ data_interval_end }}"
 
         # Build environment variables
         env_vars = self.config.airflow.env_vars.copy()
@@ -426,9 +444,8 @@ dag = DAG(
                 arguments=[
                     "run",
                     "--skip-janitor",
-                    "--select-models", "{model_name_escaped}",
-                    "--start", "{{{{ data_interval_start }}}}",
-                    "--end", "{{{{ data_interval_end }}}}",
+                    "--select-models", "{model_name_escaped}",{start_args}
+                    "--end", "{end_arg}",
                 ],
                 env_vars=[
                     {env_block}
@@ -624,11 +641,13 @@ EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minu
 HAS_SUBHOURLY_INCREMENTAL = {has_subhourly_incremental}
 SKIP_IF_NOT_DUE = {self.config.generation.skip_if_not_due}
 TASK_ID_PREFIX = {task_id_prefix}
+# "sqlmesh": fill every missing interval up to the run's end; "airflow": the run's interval
+INTERVAL_WINDOW = "{self.config.generation.interval_window}"
 
 logger.info(f"SQLMesh Project Path: {{SQLMESH_PROJECT_PATH}}")
 logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")
 
-if HAS_SUBHOURLY_INCREMENTAL and not {self.config.airflow.catchup} and RECOVERY_MODE in ("disabled", "warn"):
+if INTERVAL_WINDOW == "airflow" and HAS_SUBHOURLY_INCREMENTAL and not {self.config.airflow.catchup} and RECOVERY_MODE in ("disabled", "warn"):
     logger.warning(
         "Sub-hourly incremental SQLMesh models detected with catchup=False. "
         "Missed intervals will not be fully replayed unless bounded recovery or manual replay is enabled."
@@ -798,7 +817,7 @@ with DAG(
     tasks = {{}}
     recovery_anchor = None
 
-    if RECOVERY_MODE != "disabled" and HAS_SUBHOURLY_INCREMENTAL and EXPECTED_INTERVAL_MINUTES:
+    if INTERVAL_WINDOW == "airflow" and RECOVERY_MODE != "disabled" and HAS_SUBHOURLY_INCREMENTAL and EXPECTED_INTERVAL_MINUTES:
         def detect_interval_gap(**context):
             prev_end = context.get("prev_data_interval_end_success")
             current_start = context.get("data_interval_start") or context.get("execution_date")
@@ -946,15 +965,16 @@ with DAG(
                         gateway=SQLMESH_GATEWAY,
                     )
 
-                    logger.info(f"Running model {{model_display_name}} for interval {{start}} to {{end}}")
+                    # With INTERVAL_WINDOW = "sqlmesh", SQLMesh fills every missing
+                    # interval up to the end of this run (outages and failed runs catch up).
+                    window = {{"end": end}} if INTERVAL_WINDOW == "sqlmesh" else {{"start": start, "end": end}}
+                    logger.info(f"Running model {{model_display_name}} for {{window}}")
 
-                    # Run the specific model with proper time range
                     result = run_ctx.run(
                         environment=SQLMESH_ENVIRONMENT,
-                        start=start,
-                        end=end,
                         select_models=[model_fqn],
                         skip_janitor=True,
+                        **window,
                     )
 
                     logger.info(f"Model {{model_display_name}} completed successfully")
