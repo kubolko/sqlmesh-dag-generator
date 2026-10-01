@@ -248,6 +248,17 @@ def interval_end_matches_minutes(
     return end.second == 0 and (end.minute % interval_minutes) == 0
 
 
+def prefixed_task_id(prefix: Optional[str], task_id: str) -> str:
+    """Prefix an Airflow task id when several projects share one DAG.
+
+    An empty prefix returns ``task_id`` unchanged, so a single-project DAG
+    keeps the ids already stored in its task history.
+    """
+    if not prefix:
+        return task_id
+    return f"{prefix}__{task_id}"
+
+
 def should_skip_model_for_tick(
     *,
     cron_expr: Optional[str] = None,

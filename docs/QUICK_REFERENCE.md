@@ -73,7 +73,27 @@ generator = SQLMeshDAGGenerator(
 )
 ```
 
-### 4. Manual Schedule Override
+### 4. Two projects in one DAG
+
+```python
+orders = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/orders",
+    gateway="warehouse",
+    auto_replan_on_change=False,
+)
+finance = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/finance",
+    gateway="warehouse",
+    auto_replan_on_change=False,
+    task_id_prefix="finance",       # janitor, sources and models
+    dag_tick_minutes=15,            # timetable of the shared DAG
+)
+```
+
+`task_id_prefix` left empty keeps `sqlmesh_janitor` and `sqlmesh_<model>`.
+`dag_tick_minutes` left empty means "shortest model in this project".
+
+### 5. Manual Schedule Override
 
 ```python
 generator = SQLMeshDAGGenerator(
@@ -82,7 +102,7 @@ generator = SQLMeshDAGGenerator(
 )
 ```
 
-### 5. Inspect Then Decide
+### 6. Inspect Then Decide
 
 ```python
 generator = SQLMeshDAGGenerator(

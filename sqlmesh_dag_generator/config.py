@@ -345,6 +345,16 @@ class GenerationConfig:
     # SQLMesh chase upstream again duplicates work. Off by default to keep the
     # behaviour of existing DAGs unchanged.
     no_auto_upstream: bool = False
+    # Prefix Airflow task ids when more than one project is drawn into the same
+    # DAG. Empty keeps the historical ids (sqlmesh_janitor, source__*, sqlmesh_*).
+    # Applies to create_tasks_in_dag. A single-project DAG leaves this unset.
+    task_id_prefix: Optional[str] = None
+    # Minutes of the Airflow timetable this project's tasks run on. Unset means
+    # "the shortest model in this project", which is correct when the DAG
+    # schedule comes from this project alone. Set it when the DAG ticks faster
+    # because another project in the same DAG has a shorter cron: skip_if_not_due
+    # then uses the real tick instead of treating every model here as due.
+    dag_tick_minutes: Optional[int] = None
     # Publish backfill. ``changed`` (default) backfills models added or directly
     # modified by this plan. ``all`` backfills every model with missing intervals,
     # which is what ``plan()`` does on a production environment.
@@ -364,6 +374,15 @@ class GenerationConfig:
             self.model_checks = ModelChecksConfig(**self.model_checks)
         elif self.model_checks is None:
             self.model_checks = ModelChecksConfig()
+        if self.task_id_prefix is not None:
+            prefix = str(self.task_id_prefix).strip().replace("-", "_").replace(" ", "_")
+            prefix = "".join(ch for ch in prefix if ch.isalnum() or ch == "_").strip("_")
+            self.task_id_prefix = prefix or None
+        if self.dag_tick_minutes is not None:
+            tick = int(self.dag_tick_minutes)
+            if tick <= 0:
+                raise ValueError("generation.dag_tick_minutes must be a positive number of minutes")
+            self.dag_tick_minutes = tick
         scope = str(self.backfill_scope or "changed").strip().lower()
         if scope not in _BACKFILL_SCOPES:
             raise ValueError(
@@ -530,6 +549,8 @@ class DAGGeneratorConfig:
                 "model_docs": self.generation.model_docs,
                 "audit_tasks": self.generation.audit_tasks,
                 "no_auto_upstream": self.generation.no_auto_upstream,
+                "task_id_prefix": self.generation.task_id_prefix,
+                "dag_tick_minutes": self.generation.dag_tick_minutes,
                 "backfill_scope": self.generation.backfill_scope,
                 "model_checks": {
                     "require_explicit_start": self.generation.model_checks.require_explicit_start,

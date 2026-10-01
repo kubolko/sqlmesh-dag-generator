@@ -8,7 +8,7 @@ from typing import Optional
 
 from sqlmesh_dag_generator.config import DAGGeneratorConfig
 from sqlmesh_dag_generator.models import DAGStructure, SQLMeshModelInfo
-from sqlmesh_dag_generator.utils import get_interval_frequency_minutes
+from sqlmesh_dag_generator.utils import get_interval_frequency_minutes, prefixed_task_id
 
 
 class AirflowDAGBuilder:
@@ -20,7 +20,16 @@ class AirflowDAGBuilder:
         self.config = config
         self.dag_structure = dag_structure
 
+    def _airflow_task_id(self, task_id: str) -> str:
+        """Same id rule as ``SQLMeshDAGGenerator.create_tasks_in_dag``."""
+        return prefixed_task_id(self.config.generation.task_id_prefix, task_id)
+
     def _get_expected_interval_minutes(self) -> Optional[int]:
+        # A generated file can run inside a DAG whose timetable is faster than
+        # this project's shortest model. Honor that tick when it is set.
+        configured = self.config.generation.dag_tick_minutes
+        if configured is not None:
+            return configured
         intervals = [
             get_interval_frequency_minutes(model.interval_unit)
             for model in self.dag_structure.models.values()
@@ -261,7 +270,7 @@ dag = DAG(
 
     def _build_single_task(self, model_info: SQLMeshModelInfo) -> str:
         """Build a single task definition"""
-        task_id = model_info.get_task_id()
+        task_id = self._airflow_task_id(model_info.get_task_id())
 
         if self.config.generation.operator_type == "python":
             return self._build_python_task(model_info, task_id)
@@ -438,14 +447,16 @@ dag = DAG(
             if not model_info.dependencies:
                 continue
 
-            task_id = model_info.get_task_id()
+            task_id = self._airflow_task_id(model_info.get_task_id())
 
             for dep_name in model_info.dependencies:
                 # Check if dependency exists in our models
                 if dep_name not in self.dag_structure.models:
                     continue
 
-                dep_task_id = self.dag_structure.models[dep_name].get_task_id()
+                dep_task_id = self._airflow_task_id(
+                    self.dag_structure.models[dep_name].get_task_id()
+                )
                 dep_lines.append(f"{dep_task_id} >> {task_id}")
 
         if len(dep_lines) == 1:
@@ -471,8 +482,8 @@ dag = DAG(
                 continue
             any_model_trigger = True
             conf = default_trigger_conf(model_name, cfg.conf)
-            model_task = model_info.get_task_id()
-            tid = trigger_task_id(cfg.dag_id, model_task)
+            model_task = self._airflow_task_id(model_info.get_task_id())
+            tid = self._airflow_task_id(trigger_task_id(cfg.dag_id, model_info.get_task_id()))
             dep_lines.append(f"""{tid} = TriggerDagRunOperator(
     task_id="{tid}",
     trigger_dag_id="{cfg.dag_id}",
@@ -490,14 +501,17 @@ dag = DAG(
             trigger_conf = repr(self.config.generation.trigger_dag_conf or {})
             dep_lines.append("")
             dep_lines.append("# Trigger downstream DAG on pipeline completion")
+            pipeline_trigger_id = self._airflow_task_id(
+                f"trigger_{self.config.generation.trigger_dag_id}"
+            )
             dep_lines.append(f"""trigger_downstream = TriggerDagRunOperator(
-    task_id="trigger_{self.config.generation.trigger_dag_id}",
+    task_id="{pipeline_trigger_id}",
     trigger_dag_id="{self.config.generation.trigger_dag_id}",
     conf={trigger_conf},
     dag=dag,
 )""")
             leaf_tasks = [
-                info.get_task_id()
+                self._airflow_task_id(info.get_task_id())
                 for name, info in self.dag_structure.models.items()
                 if name
                 not in {dep for m in self.dag_structure.models.values() for dep in m.dependencies}
@@ -508,22 +522,23 @@ dag = DAG(
         # Same rule as create_tasks_in_dag: one janitor after the leaves, so
         # parallel `sqlmesh run` tasks do not DELETE state._intervals together.
         leaf_tasks = [
-            info.get_task_id()
+            self._airflow_task_id(info.get_task_id())
             for name, info in self.dag_structure.models.items()
             if name
             not in {dep for m in self.dag_structure.models.values() for dep in m.dependencies}
         ]
+        janitor_task_id = self._airflow_task_id("sqlmesh_janitor")
         if leaf_tasks and self.config.generation.operator_type == "python":
             dep_lines.append("")
             dep_lines.append(
-                """def _run_sqlmesh_janitor(**context):
+                f"""def _run_sqlmesh_janitor(**context):
     from sqlmesh import Context
     ctx = Context(paths=SQLMESH_PROJECT_PATH, gateway=SQLMESH_GATEWAY)
     ctx.run_janitor(ignore_ttl=False)
-    return {"status": "completed"}
+    return {{"status": "completed"}}
 
 sqlmesh_janitor = PythonOperator(
-    task_id="sqlmesh_janitor",
+    task_id="{janitor_task_id}",
     python_callable=_run_sqlmesh_janitor,
     trigger_rule="all_done",
     dag=dag,
@@ -537,7 +552,7 @@ sqlmesh_janitor = PythonOperator(
             dep_lines.append("")
             dep_lines.append(
                 f'''sqlmesh_janitor = BashOperator(
-    task_id="sqlmesh_janitor",
+    task_id="{janitor_task_id}",
     bash_command="{janitor_cmd}",
     trigger_rule="all_done",
     dag=dag,
@@ -593,6 +608,7 @@ DO NOT EDIT MANUALLY - changes will be overwritten.
         # Use Airflow Variables for flexible configuration
         expected_interval_minutes = self._get_expected_interval_minutes()
         has_subhourly_incremental = self._has_subhourly_incremental_models()
+        task_id_prefix = repr(self.config.generation.task_id_prefix or "")
         return f"""# SQLMesh Configuration (from Airflow Variables)
 # Set these in Airflow UI: Admin > Variables
 SQLMESH_PROJECT_PATH = Variable.get(
@@ -613,6 +629,7 @@ RECOVERY_FAIL_ON_EXCESS_GAP = {self.config.airflow.recovery.fail_on_excess_gap}
 EXPECTED_INTERVAL_MINUTES = {expected_interval_minutes if expected_interval_minutes is not None else 'None'}
 HAS_SUBHOURLY_INCREMENTAL = {has_subhourly_incremental}
 SKIP_IF_NOT_DUE = {self.config.generation.skip_if_not_due}
+TASK_ID_PREFIX = {task_id_prefix}
 
 logger.info(f"SQLMesh Project Path: {{SQLMESH_PROJECT_PATH}}")
 logger.info(f"SQLMesh Environment: {{SQLMESH_ENVIRONMENT}}")
@@ -829,16 +846,19 @@ with DAG(
 
             return payload
 
+        _integrity_task_id = (
+            f"{{TASK_ID_PREFIX}}__sqlmesh_integrity_guard" if TASK_ID_PREFIX else "sqlmesh_integrity_guard"
+        )
         sqlmesh_integrity_guard = PythonOperator(
-            task_id="sqlmesh_integrity_guard",
+            task_id=_integrity_task_id,
             python_callable=detect_interval_gap,
         )
-        tasks["sqlmesh_integrity_guard"] = sqlmesh_integrity_guard
+        tasks[_integrity_task_id] = sqlmesh_integrity_guard
         recovery_anchor = sqlmesh_integrity_guard
 
         if RECOVERY_MODE == "bounded_auto":
             def replay_missing_intervals(**context):
-                gap_payload = context["ti"].xcom_pull(task_ids="sqlmesh_integrity_guard") or {{}}
+                gap_payload = context["ti"].xcom_pull(task_ids=_integrity_task_id) or {{}}
                 gap_intervals = gap_payload.get("gap_intervals", 0)
                 if not gap_intervals:
                     logger.info("No SQLMesh recovery backfill needed for this Airflow run.")
@@ -874,18 +894,25 @@ with DAG(
                     "recovery_end": gap_payload["recovery_end"],
                 }}
 
+            _recovery_task_id = (
+                f"{{TASK_ID_PREFIX}}__sqlmesh_recovery_backfill"
+                if TASK_ID_PREFIX
+                else "sqlmesh_recovery_backfill"
+            )
             sqlmesh_recovery_backfill = PythonOperator(
-                task_id="sqlmesh_recovery_backfill",
+                task_id=_recovery_task_id,
                 python_callable=replay_missing_intervals,
             )
             sqlmesh_integrity_guard >> sqlmesh_recovery_backfill
-            tasks["sqlmesh_recovery_backfill"] = sqlmesh_recovery_backfill
+            tasks[_recovery_task_id] = sqlmesh_recovery_backfill
             recovery_anchor = sqlmesh_recovery_backfill
 
     # Create task for each discovered model
     for model_name, model_info in discovered_models.items():
         # Same rule as runtime mode, so task ids (and their history) match.
         task_id = model_task_id(model_name)
+        if TASK_ID_PREFIX:
+            task_id = f"{{TASK_ID_PREFIX}}__{{task_id}}"
 
         # Create callable for this model
         def make_callable(
@@ -987,15 +1014,18 @@ with DAG(
         run_ctx.run_janitor(ignore_ttl=False)
         return {{"status": "completed"}}
 
+    _janitor_task_id = (
+        f"{{TASK_ID_PREFIX}}__sqlmesh_janitor" if TASK_ID_PREFIX else "sqlmesh_janitor"
+    )
     sqlmesh_janitor = PythonOperator(
-        task_id="sqlmesh_janitor",
+        task_id=_janitor_task_id,
         python_callable=run_sqlmesh_janitor,
         trigger_rule="all_done",
     )
     for _task in list(tasks.values()):
         if not _task.downstream_list:
             _task >> sqlmesh_janitor
-    tasks["sqlmesh_janitor"] = sqlmesh_janitor
+    tasks[_janitor_task_id] = sqlmesh_janitor
 
     logger.info(f"DAG created with {{len(tasks)}} tasks")'''
 

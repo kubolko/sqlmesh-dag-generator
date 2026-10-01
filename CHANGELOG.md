@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-01
+
+### Added
+- `generation.task_id_prefix`. Set it on every project after the first when
+  several SQLMesh projects are drawn into one Airflow DAG. Janitor, health
+  check, integrity, recovery, the automatic replan task, downstream triggers,
+  source nodes and model tasks all take the prefix. The same prefix is written
+  into a generated DAG file. Unset, the ids stay `sqlmesh_janitor`, `source__*`
+  and `sqlmesh_<model>`.
+- `generation.dag_tick_minutes`. `skip_if_not_due` uses this as the Airflow
+  timetable. Unset, the tick stays the shortest model in this project. Set it
+  on a slower project that shares a DAG with a faster one. A generated DAG
+  file embeds the same value as `EXPECTED_INTERVAL_MINUTES`.
+- `create_plan_apply_task` still uses the `task_id` you pass. Two publish
+  tasks in one DAG need two ids. The automatic replan inside
+  `create_tasks_in_dag` prefixes its own id when `task_id_prefix` is set.
+
 ## [0.11.0] - 2026-09-30
 
 ### Changed
