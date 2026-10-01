@@ -338,6 +338,10 @@ class GenerationConfig:
     # Copy SQLMesh model metadata (owner, description, tags, audits) onto the tasks
     # so the Airflow UI shows what the model actually is.
     model_docs: bool = True
+    # Label tasks with the table name ("dwh.orders", "API_ODS.EVENTS (source)")
+    # instead of the sanitised task id. Ids, and so task history, do not change.
+    # Airflow 2.9+; ignored on older versions.
+    task_display_names: bool = True
     # Run the model's SQLMesh audits in a dedicated task after the model task.
     audit_tasks: bool = False
     # Pass no_auto_upstream=True to Context.run (SQLMesh 0.230+). Recommended:
@@ -547,6 +551,7 @@ class DAGGeneratorConfig:
                 "emit_datasets": self.generation.emit_datasets,
                 "dataset_uri_prefix": self.generation.dataset_uri_prefix,
                 "model_docs": self.generation.model_docs,
+                "task_display_names": self.generation.task_display_names,
                 "audit_tasks": self.generation.audit_tasks,
                 "no_auto_upstream": self.generation.no_auto_upstream,
                 "task_id_prefix": self.generation.task_id_prefix,

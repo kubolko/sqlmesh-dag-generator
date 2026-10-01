@@ -54,6 +54,12 @@ class SQLMeshModelInfo:
     cron_tz: Optional[str] = None  # IANA zone name when the model sets cron_tz
     project: Optional[str] = None  # SQLMesh multi-repo project name
     audits: List[str] = field(default_factory=list)  # audit names attached to the model
+    # Shown on the task in the Airflow UI (see task_docs). Empty when SQLMesh
+    # cannot infer them, e.g. a Python model without declared columns.
+    columns: Dict[str, str] = field(default_factory=dict)  # column -> SQL type
+    column_descriptions: Dict[str, str] = field(default_factory=dict)
+    time_column: Optional[str] = None  # INCREMENTAL_BY_TIME_RANGE time column
+    grains: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.display_name:
