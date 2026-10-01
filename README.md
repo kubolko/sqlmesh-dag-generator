@@ -102,6 +102,49 @@ for dag_id, dag in build_dag_groups(DAGGeneratorConfig.from_file("config.yaml"))
 Cross-group edges become Airflow Datasets (or `ExternalTaskSensor`s), so lineage
 survives the split. Details: [docs/DAG_GROUPS.md](docs/DAG_GROUPS.md).
 
+## Several projects, one DAG
+
+The other direction is two SQLMesh projects drawn into one Airflow DAG. Call
+`create_tasks_in_dag` once per project. Give every project after the first a
+`task_id_prefix`, so janitor, health check, recovery, sources and models do not
+reuse ids that already belong to the first project. An empty prefix keeps the
+historical ids.
+
+When the DAG timetable comes from the faster project, tell the slower project
+that tick with `dag_tick_minutes`. Otherwise it assumes its own shortest model
+is the timetable and runs those models on every tick.
+
+```python
+orders = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/orders",
+    gateway="warehouse",
+    auto_replan_on_change=False,
+)
+finance = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/finance",
+    gateway="warehouse",
+    auto_replan_on_change=False,
+    task_id_prefix="finance",
+    dag_tick_minutes=15,  # the orders project, and this DAG, run every 15 minutes
+)
+
+with DAG("warehouse", schedule=orders.get_recommended_schedule(), ...) as dag:
+    orders.create_tasks_in_dag(dag)
+    finance.create_tasks_in_dag(dag)
+```
+
+`finance__sqlmesh_janitor` compacts the finance project. `sqlmesh_janitor` compacts
+orders. A model that is coarser than 15 minutes skips until its own cron is due.
+
+The same two keys apply to a generated DAG file. `create_plan_apply_task` does
+not add the prefix on its own: pass a distinct `task_id` when two publish tasks
+share a DAG.
+
+```python
+orders.create_plan_apply_task(dag, task_id="orders_plan_apply")
+finance.create_plan_apply_task(dag, task_id="finance_plan_apply")
+```
+
 ## Deploy path vs interval path
 
 For large warehouses, do not run plan/apply on the DAG that runs intervals.

@@ -25,6 +25,7 @@ from sqlmesh_dag_generator.selectors import select_models
 from sqlmesh_dag_generator.utils import (
     get_interval_frequency_minutes,
     not_due_skip_result,
+    prefixed_task_id,
     sanitize_task_id,
     should_skip_model_for_tick,
 )
@@ -287,6 +288,8 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 model_docs=kwargs.get("model_docs", True),
                 audit_tasks=kwargs.get("audit_tasks", False),
                 no_auto_upstream=kwargs.get("no_auto_upstream", False),
+                task_id_prefix=kwargs.get("task_id_prefix"),
+                dag_tick_minutes=kwargs.get("dag_tick_minutes"),
                 backfill_scope=kwargs.get("backfill_scope", "changed"),
                 model_checks=kwargs.get("model_checks") or {},
             )
@@ -1084,6 +1087,14 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         return dag_code
 
+    def _prefixed_task_id(self, task_id: str) -> str:
+        """Prefix a task id when several projects share one DAG.
+
+        An empty ``generation.task_id_prefix`` returns ``task_id`` unchanged,
+        so existing single-project DAGs keep their task history.
+        """
+        return prefixed_task_id(self.config.generation.task_id_prefix, task_id)
+
     def create_tasks_in_dag(self, dag, models: Optional[List[str]] = None):
         """
         Create Airflow tasks directly inside a DAG context.
@@ -1131,7 +1142,14 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
         source_table_tasks = {}
         audit_tasks_by_model = {}
         recovery_config = self.config.airflow.recovery
-        expected_interval_minutes = self.get_expected_interval_minutes()
+        # The DAG tick is this project's shortest model, unless the caller says
+        # the shared DAG ticks faster (another project in the same DAG).
+        configured_tick = self.config.generation.dag_tick_minutes
+        expected_interval_minutes = (
+            configured_tick
+            if configured_tick is not None
+            else self.get_expected_interval_minutes()
+        )
         task_overrides = self._resolve_task_overrides(target_models)
 
         # Step -1: Create Health Check Task (if enabled)
@@ -1176,16 +1194,21 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 return "Health check passed"
 
             health_check_task = PythonOperator(
-                task_id="sqlmesh_health_check", python_callable=run_health_check, dag=dag
+                task_id=self._prefixed_task_id("sqlmesh_health_check"),
+                python_callable=run_health_check,
+                dag=dag,
             )
-            logger.info("Created health check task: sqlmesh_health_check")
+            logger.info("Created health check task: %s", health_check_task.task_id)
 
         # Step 0: Create Replan Task (if enabled)
         # Prefer a dedicated deploy DAG (create_plan_apply_task) for large warehouses
         # so interval runs never block on plan/apply.
         replan_task = None
         if self.config.generation.auto_replan_on_change:
-            replan_task = self.create_plan_apply_task(dag=dag)
+            replan_task = self.create_plan_apply_task(
+                dag=dag,
+                task_id=self._prefixed_task_id("sqlmesh_plan_apply"),
+            )
             if health_check_task:
                 health_check_task >> replan_task
 
@@ -1247,12 +1270,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                 return payload
 
+            integrity_task_id = self._prefixed_task_id("sqlmesh_integrity_guard")
             integrity_task = PythonOperator(
-                task_id="sqlmesh_integrity_guard",
+                task_id=integrity_task_id,
                 python_callable=detect_interval_gap,
                 dag=dag,
             )
-            tasks["sqlmesh_integrity_guard"] = integrity_task
+            tasks[integrity_task_id] = integrity_task
 
             if replan_task:
                 replan_task >> integrity_task
@@ -1266,7 +1290,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
                 def replay_missing_intervals(**context):
                     task_instance = context["ti"]
-                    gap_payload = task_instance.xcom_pull(task_ids="sqlmesh_integrity_guard") or {}
+                    gap_payload = task_instance.xcom_pull(task_ids=integrity_task_id) or {}
                     gap_intervals = gap_payload.get("gap_intervals", 0)
                     if not gap_intervals:
                         logger.info("No SQLMesh recovery backfill needed for this Airflow run.")
@@ -1322,12 +1346,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                         "recovery_end": gap_payload["recovery_end"],
                     }
 
+                recovery_task_id = self._prefixed_task_id("sqlmesh_recovery_backfill")
                 recovery_task = PythonOperator(
-                    task_id="sqlmesh_recovery_backfill",
+                    task_id=recovery_task_id,
                     python_callable=replay_missing_intervals,
                     dag=dag,
                 )
-                tasks["sqlmesh_recovery_backfill"] = recovery_task
+                tasks[recovery_task_id] = recovery_task
                 integrity_task >> recovery_task
                 recovery_anchor_task = recovery_task
 
@@ -1344,7 +1369,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             for source_table in all_source_tables:
                 # Create a clean task_id from table name using sanitize_task_id
                 # This removes quotes, dots, and other invalid characters
-                task_id = f"source__{sanitize_task_id(source_table)}"
+                task_id = self._prefixed_task_id(f"source__{sanitize_task_id(source_table)}")
 
                 source_task = EmptyOperator(
                     task_id=task_id,
@@ -1369,7 +1394,7 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
 
         # Step 2: Create a task for each SQLMesh model
         for model_name, model_info in target_models.items():
-            task_id = model_info.get_task_id()
+            task_id = self._prefixed_task_id(model_info.get_task_id())
 
             # Create the execution function
             def make_callable(m_name, m_fqn, m_interval_minutes=None, m_cron=None, m_cron_tz=None):
@@ -1625,10 +1650,13 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
             else:
                 depended_on = {d for info in target_models.values() for d in info.dependencies}
                 janitor_leaves = [n for n in target_models if n not in depended_on]
-            janitor_task = self.create_janitor_task(dag, trigger_rule="all_done")
+            janitor_task_id = self._prefixed_task_id("sqlmesh_janitor")
+            janitor_task = self.create_janitor_task(
+                dag, task_id=janitor_task_id, trigger_rule="all_done"
+            )
             for name in janitor_leaves:
                 audit_tasks_by_model.get(name, tasks[name]) >> janitor_task
-            tasks["sqlmesh_janitor"] = janitor_task
+            tasks[janitor_task_id] = janitor_task
             logger.info(
                 "sqlmesh_janitor runs once after %s leaf model(s); model tasks skip janitor",
                 len(janitor_leaves),
@@ -1648,7 +1676,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 if not trigger_cfg:
                     continue
                 conf = default_trigger_conf(model_name, trigger_cfg.conf)
-                tid = trigger_task_id(trigger_cfg.dag_id, model_info.get_task_id())
+                tid = self._prefixed_task_id(
+                    trigger_task_id(trigger_cfg.dag_id, model_info.get_task_id())
+                )
                 op_kwargs = {
                     "task_id": tid,
                     "trigger_dag_id": trigger_cfg.dag_id,
@@ -1687,7 +1717,9 @@ class SQLMeshDAGGenerator(SQLMeshOpsTasksMixin):
                 conf.setdefault("source", "sqlmesh")
                 conf.setdefault("pipeline", self.config.airflow.dag_id)
                 pipeline_trigger = TriggerDagRunOperator(
-                    task_id=f"trigger_{self.config.generation.trigger_dag_id}",
+                    task_id=self._prefixed_task_id(
+                        f"trigger_{self.config.generation.trigger_dag_id}"
+                    ),
                     trigger_dag_id=self.config.generation.trigger_dag_id,
                     conf=conf,
                     dag=dag,
