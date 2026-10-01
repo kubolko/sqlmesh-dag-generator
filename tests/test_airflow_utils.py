@@ -260,3 +260,26 @@ class TestGeneratorIntegration:
 
         assert generator.config.sqlmesh.connection_config is not None
         assert generator.config.sqlmesh.state_connection_config is not None
+
+
+def test_env_resolver_reads_environment_variables(monkeypatch):
+    """The documented env example used to return the dict of variable names unchanged."""
+    from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+
+    monkeypatch.setenv("DB_TYPE", "postgres")
+    monkeypatch.setenv("DB_HOST", "db.internal")
+    monkeypatch.delenv("DB_PASSWORD", raising=False)
+
+    config = resolve_credentials(
+        {"type": "DB_TYPE", "host": "DB_HOST", "password": "DB_PASSWORD"},
+        resolver_type="env",
+    )
+
+    assert config == {"type": "postgres", "host": "db.internal"}  # unset variables are left out
+
+
+def test_dict_without_a_resolver_is_used_as_is():
+    from sqlmesh_dag_generator.airflow_utils import resolve_credentials
+
+    ready = {"type": "duckdb", "database": ":memory:"}
+    assert resolve_credentials(ready) is ready
