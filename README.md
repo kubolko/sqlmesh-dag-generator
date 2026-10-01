@@ -185,9 +185,24 @@ See [docs/MAINTENANCE_TASKS.md](docs/MAINTENANCE_TASKS.md).
 
 ## What ends up in the Airflow UI
 
-Each model task carries the model's owner, description, kind, cron (with `cron_tz`),
-tags and audits as `doc_md`, so the task page answers "what is this?" without opening
-the repository. Turn it off with `model_docs=False`.
+Every task says which table it stands for, without opening the repository:
+
+- **Label.** Tasks are shown as `dwh.orders` or `API_ODS.EVENTS (source)` in the
+  graph, the grid and the task instance header, instead of the sanitised task id.
+  With `task_id_prefix` the project goes in front: `[snowflake] dwh.orders`. The task
+  ids do not change, so history is kept. Airflow 2.9+; `task_display_names=False`
+  turns it off.
+- **Documentation card** (`doc_md`) on model *and* source tasks: the table, kind,
+  cron, owner, grain, what it reads, what reads it, and its columns with types and
+  comments. Airflow 3 shows it behind the **Documentation** button on the task page -
+  click the task name in the Grid view. Airflow 2 shows it on the task instance
+  details page. `model_docs=False` turns it off.
+- **Log.** Each model run starts its log with the same lineage in three lines, so
+  the task instance view answers "what did this build?" on its own.
+
+Source tasks run nothing, so they have no log. Declaring a raw table as a SQLMesh
+external model (`sqlmesh create_external_models`) turns it into a model task whose
+card lists the columns and types.
 
 Per-selection task settings replace copy-pasted operator kwargs:
 
@@ -202,22 +217,81 @@ generation:
 
 ## Upstream handling
 
-Every model already has its own Airflow task, so SQLMesh does not need to pull
-upstream models in again:
+By default each model task lets SQLMesh check the model's upstream models and fill
+them first if they are behind. In a DAG where every model is its own task that check
+almost always finds nothing to do. `no_auto_upstream: true` skips it.
 
-```yaml
-generation:
-  no_auto_upstream: true    # recommended; will become the default in 0.11.0
+It stays off by default for a reason: with it, SQLMesh processes a model's intervals
+even when an upstream model has no data for them yet, and marks them done - the gap
+in the child is then permanent. When it is on, the package only applies it to models
+whose upstream models are all tasks in the same DAG, because Airflow has run those
+first. A filtered DAG or a DAG group that reads another group's model keeps the
+default.
+
+## Connections resolved in the task
+
+By default the warehouse and state connections are resolved while Airflow parses
+the DAG file, every parse. With `resolve_connections="task"` they are resolved inside
+each task instead, right before SQLMesh opens a session, so the DAG processor never
+handles warehouse secrets:
+
+```python
+generator = SQLMeshDAGGenerator(
+    sqlmesh_project_path="/opt/airflow/sqlmesh_snowflake",
+    gateway="snowflake",
+    connection=lambda: snowflake_config(BaseHook.get_connection("SNOWFLAKE")),
+    state_connection="RDS_SQLMESH",
+    resolve_connections="task",
+    # Used only to load the project while parsing: same type and database as the
+    # real one, secrets may be placeholders. Omit it if config.yaml loads on its own.
+    parse_connection={"type": "snowflake", "account": "-", "user": "-", "password": "-",
+                      "database": "API_ODS"},
+)
 ```
 
-It is off by default in 0.10.0 so existing DAGs keep their current behaviour.
+`connection` and `state_connection` accept an Airflow connection id, a dict, or a
+function returning either. They are resolved once per task process.
+
+## Attaching work to part of the graph
+
+`select_tasks` returns the tasks `create_tasks_in_dag` made for a selection, so DAG
+code does not have to guess them from roots or task ids:
+
+```python
+with DAG(...) as dag:
+    generator.create_tasks_in_dag(dag)
+    refresh_streaming_mvs >> generator.select_tasks("interval:FIVE_MINUTE")
+```
+
+## External models
+
+Tables declared in `external_models.yaml` appear as source nodes, with the declared
+description and columns on their card - the same task id an undeclared source table
+gets, so declaring a table later does not rename its task. SQLMesh reads that file
+only from the project root or `external_models/*.yaml`; the package warns when it
+finds one anywhere else.
 
 ## Recovery and completeness
 
-The package forwards Airflow's `data_interval_start` / `data_interval_end` into
-`ctx.run(start=..., end=...)`. It runs the interval Airflow gives it - it does not
-invent missed runs. With sub-hourly incremental models and `catchup=False`, an outage
-leaves gaps unless you replay them, so there is an explicit policy:
+Two ways to decide what a model task processes:
+
+```yaml
+generation:
+  interval_window: sqlmesh   # or: airflow (the default)
+```
+
+**`sqlmesh`** passes only the end of the run's data interval:
+`ctx.run(end=data_interval_end)`. SQLMesh fills every interval its state says is
+missing, up to that point. A scheduler outage or a failed run is caught up by the next
+run of that model, however long the gap was, and no guard or recovery task is added.
+`end` is the run's own boundary, not the wall clock, so a retry or a cleared old run
+never takes work from a later run. To keep a long catch-up from becoming one huge
+query, set `batch_size` on the model kind. Recommended for new DAGs.
+
+**`airflow`** passes the run's whole data interval, `ctx.run(start=..., end=...)`. It
+runs the interval Airflow gives it and nothing else. With sub-hourly incremental models
+and `catchup=False`, an outage leaves gaps unless you replay them, so this mode comes
+with an explicit recovery policy:
 
 - `recovery_mode="disabled"` - nothing is added.
 - `recovery_mode="warn"` - a guard task detects and logs missing intervals.

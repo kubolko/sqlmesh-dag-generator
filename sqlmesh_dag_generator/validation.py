@@ -246,6 +246,58 @@ _START_PROPERTY = re.compile(r"(?im)^\s*start\b")
 _PYTHON_START = re.compile(r"(?m)^\s*start\s*=")
 
 
+_EXTERNAL_MODEL_FILE_NAMES = ("external_models.yaml", "external_models.yml")
+
+
+def check_external_models_layout(project_path: str) -> List[str]:
+    """
+    Find external model declarations SQLMesh will never read.
+
+    SQLMesh loads external models only from ``<project>/external_models.yaml`` and
+    ``<project>/external_models/*.yaml``. A file anywhere else - ``models/`` is the
+    usual spot - is ignored without an error, so the declarations, their columns
+    and their types silently do nothing. Returns one message per problem.
+    """
+    import yaml
+
+    root = Path(project_path)
+    loaded_dir = root / "external_models"
+    problems: List[str] = []
+
+    for path in sorted(root.rglob("external_models.y*ml")):
+        if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue  # .cache, .venv and friends
+        if path.name not in _EXTERNAL_MODEL_FILE_NAMES:
+            continue
+        if path.parent == root or path.parent == loaded_dir:
+            continue
+
+        relative = path.relative_to(root)
+        message = (
+            f"SQLMesh ignores {relative}: external models are read only from "
+            "external_models.yaml in the project root or external_models/*.yaml"
+        )
+        try:
+            entries = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        except Exception:  # noqa: BLE001 - a broken file is still worth reporting
+            entries = []
+        if isinstance(entries, list):
+            listed = [
+                str(entry.get("name"))
+                for entry in entries
+                if isinstance(entry, dict) and isinstance(entry.get("columns"), list)
+            ]
+            message += f" ({len(entries)} declaration(s) unused)"
+            if listed:
+                message += (
+                    f". {len(listed)} of them list columns as name/type entries; "
+                    "SQLMesh expects a mapping (column: type) and fails to load that "
+                    "format once the file is moved"
+                )
+        problems.append(message)
+    return problems
+
+
 def connection_dialect(connection: Any) -> Optional[str]:
     """Warehouse type from a SQLMesh gateway connection, without opening it."""
     if connection is None:

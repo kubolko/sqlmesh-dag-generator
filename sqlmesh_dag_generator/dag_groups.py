@@ -96,6 +96,8 @@ def plan_dag_groups(
             logger.warning(message)
 
         for name in models:
+            if models[name].is_external():
+                continue  # a source for every group, owned by none
             if name in owners and owners[name] != group.dag_id:
                 message = (
                     f"Model {name} is selected by both '{owners[name]}' and "
@@ -118,7 +120,8 @@ def plan_dag_groups(
                     continue
                 plan.external_upstreams[dep] = owner
 
-    uncovered = sorted(set(all_models) - set(owners))
+    runnable = {name for name, info in all_models.items() if not info.is_external()}
+    uncovered = sorted(runnable - set(owners))
     if uncovered:
         logger.warning(
             "%s model(s) are not part of any DAG group and will not be scheduled: %s",
@@ -154,6 +157,9 @@ def _group_generator(base_generator, plan: GroupPlan):
     group_generator.models = dict(plan.models)
     # Models owned by other groups are still project models, not raw sources.
     group_generator.project_model_keys = set(base_generator.models)
+    group_generator.project_external_keys = {
+        name for name, info in base_generator.models.items() if info.is_external()
+    }
     group_generator.dag_structure = None
     return group_generator
 

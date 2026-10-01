@@ -117,8 +117,7 @@ class SQLMeshOpsTasksMixin:
                     "DAG or pass start/end in dag_run.conf."
                 )
 
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
             run_ctx = Context(**self._build_runtime_context_kwargs())
 
             logger.info("Auditing %s model(s) for %s -> %s", len(audit_models), start, end)
@@ -170,8 +169,7 @@ class SQLMeshOpsTasksMixin:
         def run_unit_tests(**context):
             from airflow.exceptions import AirflowException
 
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
             run_ctx = Context(**self._build_runtime_context_kwargs())
 
             kwargs = supported_kwargs(run_ctx.test, {"match_patterns": patterns})
@@ -224,8 +222,7 @@ class SQLMeshOpsTasksMixin:
         def run_lint(**context):
             from airflow.exceptions import AirflowException
 
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
             run_ctx = Context(**self._build_runtime_context_kwargs())
 
             lint_models = getattr(run_ctx, "lint_models", None)
@@ -288,8 +285,7 @@ class SQLMeshOpsTasksMixin:
             conf = dag_run.conf if dag_run and dag_run.conf else {}
             target_environment = conf.get("environment", environment)
 
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
             run_ctx = Context(**self._build_runtime_context_kwargs())
 
             kwargs = supported_kwargs(
@@ -360,8 +356,7 @@ class SQLMeshOpsTasksMixin:
             if end is None:
                 end = datetime.now(timezone.utc).replace(microsecond=0)
 
-            if self.merged_config is None:
-                self.load_sqlmesh_context()
+            self._prepare_runtime()
             run_ctx = Context(**self._build_runtime_context_kwargs())
 
             logger.info("Restating %s for %s -> %s", models, start, end)
